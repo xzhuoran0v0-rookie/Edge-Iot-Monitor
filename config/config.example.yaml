@@ -1,44 +1,117 @@
 # ============================================================
-# Edge-IoT Monitor — Configuration Template
+# Edge-Intelligence IoT Monitor — Example Configuration
+# ============================================================
 # Copy this file to config.yaml and fill in your values.
-# config.yaml is gitignored and should NEVER be committed.
+# config.yaml is excluded from version control (.gitignore).
+# NEVER commit config.yaml — it may contain passwords.
 # ============================================================
 
+# ------------------------------------------------------------
+# Backend HTTP Server
+# The C++ DataIngestor listens on this address and port.
+# ESP32-S3 devices POST to: http://<server.host>:<server.port>/api/ingest
+# ------------------------------------------------------------
 server:
-  host: "0.0.0.0"
-  port: 8080
-  ingest_endpoint: "/api/ingest"
-  max_connections: 64
+  host: "0.0.0.0"          # Listen on all interfaces (use 127.0.0.1 for localhost only)
+  port: 8080                # TCP port for the ingest endpoint
+  max_connections: 32       # Maximum concurrent HTTP connections
+  request_timeout_ms: 5000  # Reject requests that take longer than this (ms)
 
-serial:
-  # Fallback: direct serial mode (if not using WiFi)
-  port: "/dev/ttyUSB0"
-  baud_rate: 115200
+# ------------------------------------------------------------
+# MySQL 8.0 Database
+# The StorageEngine uses these credentials to connect.
+# Database 'sensor_db' and tables are created by sql/schema.sql
+# ------------------------------------------------------------
+database:
+  host: "127.0.0.1"         # MySQL host (localhost if running on same machine)
+  port: 3306                 # Default MySQL port
+  name: "sensor_db"          # Database name (must match schema.sql)
+  user: "iot_user"           # MySQL username
+  password: "CHANGE_ME"      # MySQL password — change this!
+  pool_size: 6               # Number of persistent connections in the pool (4–8 recommended)
+  connect_timeout_s: 10      # Seconds to wait for a connection before failing
 
-mysql:
-  host: "127.0.0.1"
-  port: 3306
-  user: "iot_user"
-  password: "YOUR_MYSQL_PASSWORD"   # <-- replace
-  database: "sensor_db"
-  pool_size: 8
-  connect_timeout_ms: 3000
-
+# ------------------------------------------------------------
+# Ollama AI Runtime
+# The AIQueryDispatcher calls Ollama's REST API at this address.
+# Ollama must be running: `ollama serve`
+# Model must be pulled: `ollama pull qwen2.5:3b-instruct-q4_K_M`
+# ------------------------------------------------------------
 ollama:
-  endpoint: "http://127.0.0.1:11434"
-  model: "qwen2:7b-instruct-q4_K_M"
-  max_tokens: 512
-  timeout_ms: 30000
-  # How many new sensor records trigger one AI analysis call
-  trigger_interval_records: 20
+  host: "http://127.0.0.1"  # Ollama server address (local only — do not expose externally)
+  port: 11434                # Default Ollama port
+  model: "qwen2.5:3b-instruct-q4_K_M"  # Exact model tag as shown in `ollama list`
+  timeout_s: 120             # Max seconds to wait for inference response (CPU can be slow)
+  max_tokens: 512            # Maximum tokens in the AI response
+  temperature: 0.3           # Inference temperature (lower = more deterministic)
 
+# ------------------------------------------------------------
+# DataFilter — IQR Anomaly Detection
+# ------------------------------------------------------------
 filter:
-  # Sliding window size (seconds) for IQR anomaly detection
-  window_seconds: 60
-  # IQR multiplier — values beyond (Q1 - k*IQR, Q3 + k*IQR) are flagged
-  iqr_multiplier: 1.5
+  window_seconds: 60         # Sliding window duration for IQR calculation
+  iqr_multiplier: 1.5        # Anomaly threshold = Q1 - k*IQR or Q3 + k*IQR (k = this value)
+  min_window_samples: 10     # Don't run IQR until this many samples are in the window
 
+# ------------------------------------------------------------
+# AIQueryDispatcher — Trigger Frequency
+# ------------------------------------------------------------
+ai:
+  trigger_every_n_records: 20   # Run AI analysis after every N new sensor records
+  max_window_records: 100       # Number of recent records fed into the AI prompt
+  enabled: true                  # Set to false to disable AI calls entirely (for testing)
+
+# ------------------------------------------------------------
+# Storage — Batch Insert Settings
+# ------------------------------------------------------------
+storage:
+  batch_size: 50             # Accumulate this many records before flushing to MySQL
+  flush_interval_ms: 5000    # Also flush if this much time passes, regardless of batch size
+
+# ------------------------------------------------------------
+# Device Allowlist
+# Only device_ids in this list will be accepted by DataIngestor.
+# Leave empty [] to accept any device_id (not recommended for production).
+# ------------------------------------------------------------
+devices:
+  allowlist:
+    - "esp32s3-001"
+    - "esp32s3-002"
+    - "esp32s3-003"
+    # Add more device IDs here as needed
+
+# ------------------------------------------------------------
+# Sensor Validation — Acceptable Data Ranges
+# Readings outside these ranges are rejected with HTTP 400.
+# ------------------------------------------------------------
+validation:
+  temperature:
+    min: -40.0               # Minimum valid temperature (°C)
+    max: 85.0                # Maximum valid temperature (°C)
+  humidity:
+    min: 0.0                 # Minimum valid relative humidity (%)
+    max: 100.0               # Maximum valid relative humidity (%)
+  pressure:
+    min: 800.0               # Minimum valid pressure (hPa) — optional field
+    max: 1200.0              # Maximum valid pressure (hPa) — optional field
+
+# ------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------
 logging:
-  level: "INFO"        # DEBUG | INFO | WARN | ERROR
-  output: "stdout"     # stdout | file
-  file_path: "logs/backend.log"
+  level: "info"              # Options: debug, info, warn, error
+  file: "/var/log/edge_backend.log"   # Log file path (leave empty "" to log to stdout only)
+  max_size_mb: 50            # Rotate log file when it reaches this size
+  console: true              # Also print logs to stdout
+
+# ------------------------------------------------------------
+# I²C Pin Assignment (informational — used by firmware, not backend)
+# Included here for reference so all hardware config is in one place.
+# ------------------------------------------------------------
+# firmware:
+#   i2c_sda_pin: 8
+#   i2c_scl_pin: 9
+#   sensor: "SHT31"          # or "BME280"
+#   oled_address: "0x3C"
+#   sensor_address: "0x44"   # SHT31 default; BME280 is 0x76 or 0x77
+#   sample_interval_ms: 2000  # How often the ESP32 reads and transmits

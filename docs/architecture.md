@@ -1,152 +1,399 @@
-# System Architecture | 系统架构详解
+# System Architecture
+# 系统架构文档
 
-## Overview | 概述
-
-本系统采用三层架构：**感知层**（ESP32-S3 + 传感器）、**边缘处理层**（Linux C++ 后端 + MySQL + Ollama）、**展示层**（OLED + 日志）。所有计算和 AI 推理均在本地完成，无外部云依赖。
-
----
-
-## Layer Breakdown | 分层详解
-
-### Layer 1 — Sensing Layer | 感知层
-
-| Component | Role |
-|---|---|
-| ESP32-S3-N16R8 | 主控 MCU，16MB Flash，8MB PSRAM |
-| 温湿度传感器 (e.g. SHT31) | I²C 接口，采集环境数据 |
-| OLED 128×64 (SSD1306) | 实时本地显示 |
-| WiFi (802.11 b/g/n) | 数据上报至后端 |
-
-**固件数据流：**
-```
-传感器 (I²C polling)
-    → MedianFilter<float, 8>  // 去抖动，模板化实现
-    → JSON 序列化
-    → HTTP POST → 后端 /api/ingest
-    → OLED 渲染当前读数
-```
+**Project**: Edge-Intelligence IoT Monitoring & Analysis System  
+**Version**: 1.0  
+**Last Updated**: 2025
 
 ---
 
-### Layer 2 — Edge Processing Layer | 边缘处理层
-
-运行在本地 Ubuntu Linux 服务器（或 VMware VM）上，由四个 C++ 模块组成：
+## 1. High-Level Overview
 
 ```
-HTTP Server (接收固件 POST)
-    │
-    ▼
-DataIngestor          — 反序列化 JSON，CRC/范围校验
-    │
-    ▼
-DataFilter            — IQR 异常检测，单位换算
-    │
-    ├──► StorageEngine ──► MySQL sensor_db
-    │         │
-    │         │ (每 N 条触发一次 AI 分析)
-    │         ▼
-    └──► AIQueryDispatcher
-              │
-              │  构造结构化 Prompt（含最近窗口数据 + 异常事件）
-              ▼
-         Ollama REST API (localhost:11434)
-              │
-              ▼
-         Qwen2-7B-Instruct (Q4_K_M 量化)
-              │
-              ▼
-         解析响应 → 写入 analysis_log 表
-              │
-              ▼ (可选)
-         下行推送 → ESP32-S3 OLED 显示分析摘要
+┌─────────────────────────────────────────────────────────────────┐
+│                        EDGE DEVICE                              │
+│                                                                 │
+│  ┌──────────┐    I²C    ┌─────────────┐                        │
+│  │ SHT31 /  │──────────▶│  ESP32-S3   │                        │
+│  │ BME280   │           │  N16R8      │                        │
+│  └──────────┘           │             │                        │
+│                         │ MedianFilter│                        │
+│  ┌──────────┐    I²C    │ (C++template│                        │
+│  │ SSD1306  │◀──────────│  on-device) │                        │
+│  │ OLED     │           │             │                        │
+│  │ 128×64   │           └──────┬──────┘                        │
+│  └──────────┘                  │ WiFi 802.11 b/g/n             │
+└───────────────────────────────┼─────────────────────────────────┘
+                                 │
+                    HTTP POST /api/ingest
+                    (JSON payload, port 8080)
+                                 │
+┌───────────────────────────────▼─────────────────────────────────┐
+│                     LINUX BACKEND (Ubuntu 22.04 / VMware VM)    │
+│                                                                 │
+│  ┌─────────────────┐                                           │
+│  │  DataIngestor   │  HTTP server · JSON validation            │
+│  │  (C++17)        │  Input sanitisation · Schema check        │
+│  └────────┬────────┘                                           │
+│           │                                                     │
+│  ┌────────▼────────┐                                           │
+│  │  DataFilter     │  Sliding IQR anomaly detection            │
+│  │  (C++17)        │  60 s window · 1.5× IQR multiplier        │
+│  └────────┬────────┘                                           │
+│           │                                                     │
+│  ┌────────▼────────┐                                           │
+│  │  StorageEngine  │  MySQL connection pool · Batch insert     │
+│  │  (C++17)        │  Composite index (device_id, timestamp)   │
+│  └────────┬────────┘                                           │
+│           │                                                     │
+│  ┌────────▼──────────┐                                         │
+│  │ AIQueryDispatcher │  Builds prompts from sensor windows     │
+│  │ (C++17)           │  REST call → Ollama :11434              │
+│  └────────┬──────────┘  Parses response → analysis_log        │
+│           │                                                     │
+│  ┌────────▼────────────────────────────────┐                  │
+│  │           MySQL 8.0 (InnoDB)            │                  │
+│  │  sensor_readings · anomaly_events ·     │                  │
+│  │  analysis_log                           │                  │
+│  └─────────────────────────────────────────┘                  │
+│                                                                 │
+│  ┌──────────────────────────────────────────┐                  │
+│  │  Ollama Runtime (localhost:11434)         │                  │
+│  │  Model: Qwen2.5-3B-Instruct Q4_K_M        │                  │
+│  │  RAM usage: ~1.9 GB · 100% local           │                  │
+│  └──────────────────────────────────────────┘                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
-
-#### Module Responsibilities | 模块职责
-
-**`DataIngestor`**
-- 监听 HTTP `/api/ingest` 端点
-- 解析 JSON payload：`{ "device_id", "timestamp", "temperature", "humidity", ... }`
-- 校验字段完整性与数值范围，拒绝非法数据包
-
-**`DataFilter`**
-- 维护每个 `device_id` 的滑动窗口（60秒）
-- 基于 IQR（四分位距）检测统计异常值
-- 异常记录写入 `anomaly_events` 表，正常数据写入 `sensor_readings`
-
-**`StorageEngine`**
-- 封装所有 MySQL 操作，使用连接池（避免频繁建连开销）
-- 批量写入优化：积累 N 条后执行单次 `INSERT ... VALUES (...),(...),...`
-- 暴露 `queryRecentWindow(device_id, seconds)` 供 AIQueryDispatcher 调用
-
-**`AIQueryDispatcher`**
-- 定时（或事件驱动）从 StorageEngine 拉取最近数据窗口
-- 构造 Prompt 并通过 HTTP POST 调用 `localhost:11434/api/generate`
-- 解析响应中的 `severity` / `diagnosis` / `recommendation` 字段
-- 结果写入 `analysis_log` 表，并可选回传至设备
 
 ---
 
-### Layer 3 — Presentation Layer | 展示层
+## 2. Hardware Layer
 
-- **OLED 本地显示**：实时传感器读数 + 最新告警状态
-- **分析日志**：MySQL `analysis_log` 表，可通过 SQL 直接查询
-- **终端输出**：后端服务标准输出结构化日志（便于调试）
+### 2.1 ESP32-S3-N16R8
+
+| Attribute | Value |
+|-----------|-------|
+| CPU | Xtensa LX7 dual-core, up to 240 MHz |
+| Flash | 16 MB (Quad SPI) |
+| PSRAM | 8 MB (Octal SPI) |
+| WiFi | 802.11 b/g/n, 2.4 GHz, built-in |
+| Firmware framework | ESP-IDF v5.x or Arduino Core for ESP32 |
+| Flashing tool | esptool.py |
+| Operating voltage | 3.3 V |
+
+The ESP32-S3 was chosen over alternatives due to its built-in WiFi (eliminating any external network module), large PSRAM for buffering sensor windows, and strong community support for both ESP-IDF and Arduino ecosystems.
+
+### 2.2 Sensors
+
+**Primary option — SHT31:**
+- Temperature: ±0.2 °C accuracy, –40 to +125 °C range
+- Humidity: ±2% RH accuracy
+- Interface: I²C (default address 0x44)
+
+**Alternative — BME280:**
+- Temperature, Humidity, and Barometric Pressure
+- I²C (address 0x76 or 0x77)
+
+### 2.3 Display — SSD1306 OLED 128×64
+
+- Interface: I²C (address 0x3C)
+- Used to display: current readings, WiFi status, anomaly alerts, AI analysis summary
+- Driven by the U8g2 library (ESP-IDF) or Adafruit SSD1306 (Arduino)
+
+### 2.4 I²C Bus Wiring
+
+```
+ESP32-S3          SHT31 / BME280      SSD1306 OLED
+GPIO 8 (SDA) ─────── SDA ─────────── SDA
+GPIO 9 (SCL) ─────── SCL ─────────── SCL
+3.3 V ────────────── VIN ─────────── VCC
+GND ──────────────── GND ─────────── GND
+```
+
+> Both sensors and display share the same I²C bus. Each device has a unique 7-bit address.
 
 ---
 
-## Database Schema | 数据库结构
+## 3. Firmware Layer (ESP32-S3)
 
+### 3.1 On-Device MedianFilter
+
+```cpp
+// Template class — works for any numeric type and window size
+template <typename T, size_t N>
+class MedianFilter {
+    T buffer[N];
+    size_t index = 0;
+    bool full = false;
+public:
+    void push(T value);
+    T compute() const;  // returns median without modifying buffer
+};
+```
+
+**Why median filtering?**  
+Median filters are better than moving averages for sensor data because they reject single-sample spikes (e.g., I²C glitches, EMI-induced readings) while preserving real step changes.
+
+### 3.2 WiFi Communication
+
+- Protocol: HTTP/1.1 POST to `http://<backend_ip>:8080/api/ingest`
+- Payload format: `application/json`
+- Retry logic: 3 attempts with exponential back-off on failure
+- On success: parse HTTP 200 response, extract AI analysis text, display on OLED
+
+### 3.3 JSON Payload Format
+
+```json
+{
+  "device_id": "esp32s3-001",
+  "timestamp": 1700000000,
+  "temperature": 24.3,
+  "humidity": 58.7,
+  "pressure": 1013.2,
+  "firmware_version": "1.0.0"
+}
+```
+
+---
+
+## 4. Backend Layer (C++17, Ubuntu 22.04)
+
+### 4.1 DataIngestor
+
+**Responsibility:** HTTP server that accepts POST requests from ESP32 devices.
+
+- Listens on `0.0.0.0:8080`
+- Endpoint: `POST /api/ingest`
+- Validates JSON schema (required fields, type checks, range checks)
+- Rejects malformed or out-of-range payloads with HTTP 400
+- Passes valid `SensorReading` structs downstream
+
+**Input validation rules:**
+
+| Field | Type | Range |
+|-------|------|-------|
+| device_id | string | 1–64 chars |
+| timestamp | uint64 | Unix epoch, > 0 |
+| temperature | float | –40.0 to +85.0 °C |
+| humidity | float | 0.0 to 100.0 % RH |
+| pressure | float | 800.0 to 1200.0 hPa (optional) |
+
+### 4.2 DataFilter
+
+**Responsibility:** Real-time IQR-based anomaly detection.
+
+**Algorithm:**
+```
+For each incoming reading:
+  1. Append value to sliding window (last 60 seconds of readings)
+  2. Sort window values
+  3. Compute Q1 (25th percentile) and Q3 (75th percentile)
+  4. IQR = Q3 - Q1
+  5. Lower bound = Q1 - 1.5 × IQR
+  6. Upper bound = Q3 + 1.5 × IQR
+  7. If reading < lower OR reading > upper → flag as anomaly
+  8. Write anomaly record to anomaly_events table
+```
+
+**Window management:**
+- Window size: 60 seconds of data (dynamic, based on timestamps)
+- Old entries evicted as time advances
+- Separate windows per `device_id`
+
+### 4.3 StorageEngine
+
+**Responsibility:** MySQL connection pooling and persistence.
+
+- Connection pool: 4–8 connections (configurable)
+- Batch insert: accumulates up to 50 readings before flushing
+- Flush also triggered on 5-second timeout
+- Prepared statements for injection safety
+- Handles reconnection on MySQL timeout
+
+**Tables managed:**
+- `sensor_readings` — every validated reading
+- `anomaly_events` — flagged anomalies with severity score
+- `analysis_log` — AI-generated analysis text
+
+### 4.4 AIQueryDispatcher
+
+**Responsibility:** Periodic LLM analysis of sensor data windows.
+
+- Trigger: every N new records (configurable, default 20)
+- Queries last 100 readings from MySQL
+- Builds a structured prompt (see below)
+- POSTs to `http://localhost:11434/api/generate` (Ollama REST API)
+- Streams response, accumulates full text
+- Writes result to `analysis_log`
+- Optionally returns summary in HTTP response to ESP32
+
+**Prompt template:**
+```
+You are an environmental monitoring AI assistant.
+Analyse the following sensor data window and provide:
+1. A trend summary (2-3 sentences)
+2. Any anomalies or concerns
+3. A recommended action if warranted
+
+Data window (last 100 readings from device {device_id}):
+Timestamps: {timestamps}
+Temperatures (°C): {temps}
+Humidity (%RH): {hums}
+
+Detected anomalies: {anomaly_count}
+Respond concisely. Maximum 150 words.
+```
+
+---
+
+## 5. Database Layer (MySQL 8.0)
+
+### 5.1 Tables
+
+**`sensor_readings`**
 ```sql
--- 三张核心表，详见 sql/schema.sql
-
-sensor_readings    -- 每条传感器采样记录
-anomaly_events     -- 异常检测标记记录
-analysis_log       -- LLM 推理结果存档
+CREATE TABLE sensor_readings (
+    id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    device_id     VARCHAR(64)    NOT NULL,
+    timestamp     DATETIME(3)    NOT NULL,
+    temperature   FLOAT          NOT NULL,
+    humidity      FLOAT          NOT NULL,
+    pressure      FLOAT          NULL,
+    is_anomaly    TINYINT(1)     NOT NULL DEFAULT 0,
+    created_at    TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_device_time (device_id, timestamp)
+) ENGINE=InnoDB;
 ```
 
-关键索引设计：
-- `sensor_readings(device_id, timestamp)` 复合索引 → 支持时序范围查询
-- `anomaly_events(device_id, detected_at)` → 支持异常回溯
+**`anomaly_events`**
+```sql
+CREATE TABLE anomaly_events (
+    id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    device_id     VARCHAR(64)    NOT NULL,
+    timestamp     DATETIME(3)    NOT NULL,
+    metric        VARCHAR(32)    NOT NULL,
+    observed      FLOAT          NOT NULL,
+    iqr_lower     FLOAT          NOT NULL,
+    iqr_upper     FLOAT          NOT NULL,
+    severity      FLOAT          NOT NULL,
+    created_at    TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_device_time (device_id, timestamp)
+) ENGINE=InnoDB;
+```
+
+**`analysis_log`**
+```sql
+CREATE TABLE analysis_log (
+    id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    device_id     VARCHAR(64)    NOT NULL,
+    window_start  DATETIME(3)    NOT NULL,
+    window_end    DATETIME(3)    NOT NULL,
+    model_name    VARCHAR(128)   NOT NULL,
+    prompt_tokens INT            NULL,
+    analysis_text TEXT           NOT NULL,
+    created_at    TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_device_time (device_id, window_start)
+) ENGINE=InnoDB;
+```
+
+### 5.2 Indexing Strategy
+
+The composite index `(device_id, timestamp)` on all three tables ensures efficient:
+- Time-range queries for a specific device (most common query pattern)
+- Window extraction for the DataFilter and AIQueryDispatcher
+- `ORDER BY timestamp` without filesort
 
 ---
 
-## Communication Protocol | 通信协议
+## 6. AI Layer (Ollama + Qwen2.5-3B-Instruct)
 
-### ESP32-S3 → Linux Backend
+| Attribute | Value |
+|-----------|-------|
+| Model | Qwen2.5-3B-Instruct |
+| Quantization | Q4_K_M |
+| VRAM / RAM | ~1.9 GB |
+| Accuracy retention | >95% vs full precision |
+| Inference endpoint | `http://localhost:11434/api/generate` |
+| Cloud dependency | None — fully local |
+
+**Why Qwen2.5-3B Q4_K_M?**
+- 3B parameter class is lightweight enough to run comfortably on CPU with low RAM usage (~1.9 GB)
+- Q4_K_M quantization gives the best size/quality tradeoff in the 4-bit family
+- Qwen2.5 improves over Qwen2 in instruction following, structured output, and multilingual support
+- Response latency ~5–15 s on CPU, well suited for periodic analysis
+
+---
+
+## 7. Communication Protocol
+
+### 7.1 ESP32 → Backend (Data Ingestion)
 
 ```
-POST /api/ingest HTTP/1.1
-Content-Type: application/json
+Method:   POST
+Endpoint: http://<backend_ip>:8080/api/ingest
+Headers:  Content-Type: application/json
+Body:     { "device_id": "...", "timestamp": ..., "temperature": ..., "humidity": ... }
 
-{
-  "device_id":   "esp32-s3-001",
-  "timestamp":   1720000000,
-  "temperature": 27.4,
-  "humidity":    68.2,
-  "pressure":    1013.5,
-  "checksum":    "a3f2"
-}
+Success response (200):
+{ "status": "ok", "anomaly": false }
+
+Anomaly response (200):
+{ "status": "ok", "anomaly": true, "analysis": "<AI text if available>" }
+
+Error response (400):
+{ "status": "error", "message": "Invalid temperature range" }
 ```
 
-### Linux Backend → Ollama
+### 7.2 Backend → Ollama (AI Inference)
 
 ```
-POST http://localhost:11434/api/generate
-{
-  "model": "qwen2:7b-instruct-q4_K_M",
-  "prompt": "...(结构化传感器摘要 + 异常事件描述)...",
-  "stream": false
-}
+Method:   POST
+Endpoint: http://localhost:11434/api/generate
+Body:     { "model": "qwen2.5:3b-instruct-q4_K_M", "prompt": "...", "stream": false }
+Response: { "response": "<analysis text>", "done": true }
 ```
 
 ---
 
-## Key Design Decisions | 关键设计决策
+## 8. Development Phases
 
-| Decision | Rationale |
-|---|---|
-| 本地 LLM 而非云 API | 数据不出私有网络，无费用，无延迟抖动 |
-| Q4_K_M 量化 | 在 ~4.5GB 内存占用下保留 >95% 精度 |
-| C++ 后端而非 Python | 更低的内存占用与更可预测的延迟 |
-| ESP32-S3 而非 STM32 | 内置 WiFi，简化端到云通信链路 |
-| InnoDB 引擎 | 支持事务、行级锁，适合并发写入场景 |
+### Phase 1 — Backend + Simulated Data
+- Implement DataIngestor, DataFilter, StorageEngine, AIQueryDispatcher
+- Set up MySQL schema
+- Validate with `simulate_sensor.py` and `test_ollama.py`
+- No hardware required
+
+### Phase 2 — ESP32-S3 Firmware
+- Implement sensor reading loop (SHT31 or BME280)
+- Implement MedianFilter on-device
+- Implement WiFi connection + HTTP POST
+- Replace simulator with real hardware
+
+### Phase 3 — Closed Loop (OLED Feedback)
+- Backend includes AI analysis in HTTP response
+- ESP32 parses response
+- Display summary on SSD1306 OLED
+- Alert animations for anomaly events
+
+---
+
+## 9. Security Considerations
+
+- The HTTP endpoint is intended for a **local network only** (lab / competition environment)
+- `device_id` is validated against an allowlist (configurable)
+- All MySQL queries use **prepared statements** (no string concatenation)
+- Ollama is bound to `localhost` only — not exposed externally
+- Configuration secrets (DB password) are loaded from `config.yaml`, not hardcoded
+
+---
+
+## 10. Glossary
+
+| Term | Definition |
+|------|-----------|
+| IQR | Interquartile Range — a robust statistical measure of spread (Q3 − Q1) |
+| Q4_K_M | A specific quantization scheme: 4-bit weights, K-quants, medium block size |
+| Ollama | Open-source local LLM runtime that serves models via REST API |
+| ESP-IDF | Espressif IoT Development Framework — the official RTOS-based SDK for ESP32 |
+| esptool.py | Python utility for flashing firmware to ESP32 chips over USB |
+| MedianFilter | Signal processing filter that outputs the median of the N most recent samples |
