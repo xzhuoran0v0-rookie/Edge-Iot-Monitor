@@ -1,0 +1,44 @@
+# ============================================================
+# Edge-IoT Monitor — Configuration Template
+# Copy this file to config.yaml and fill in your values.
+# config.yaml is gitignored and should NEVER be committed.
+# ============================================================
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  ingest_endpoint: "/api/ingest"
+  max_connections: 64
+
+serial:
+  # Fallback: direct serial mode (if not using WiFi)
+  port: "/dev/ttyUSB0"
+  baud_rate: 115200
+
+mysql:
+  host: "127.0.0.1"
+  port: 3306
+  user: "iot_user"
+  password: "YOUR_MYSQL_PASSWORD"   # <-- replace
+  database: "sensor_db"
+  pool_size: 8
+  connect_timeout_ms: 3000
+
+ollama:
+  endpoint: "http://127.0.0.1:11434"
+  model: "qwen2:7b-instruct-q4_K_M"
+  max_tokens: 512
+  timeout_ms: 30000
+  # How many new sensor records trigger one AI analysis call
+  trigger_interval_records: 20
+
+filter:
+  # Sliding window size (seconds) for IQR anomaly detection
+  window_seconds: 60
+  # IQR multiplier — values beyond (Q1 - k*IQR, Q3 + k*IQR) are flagged
+  iqr_multiplier: 1.5
+
+logging:
+  level: "INFO"        # DEBUG | INFO | WARN | ERROR
+  output: "stdout"     # stdout | file
+  file_path: "logs/backend.log"

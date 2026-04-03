@@ -1,0 +1,67 @@
+# ============================================================
+# Edge-Intelligence IoT Monitor — .gitignore
+# ============================================================
+
+# --- Build artifacts ---
+build/
+cmake-build-*/
+*.o
+*.a
+*.so
+*.out
+*.elf
+*.bin
+*.hex
+*.map
+
+# --- CMake ---
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+CTestTestfile.cmake
+
+# --- ESP-IDF / PlatformIO ---
+.pio/
+.vscode/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+esp-idf/
+
+# --- Secrets & local config (never commit real credentials) ---
+config/config.yaml
+*.env
+.env.*
+secrets.yaml
+*.pem
+*.key
+
+# --- MySQL dumps (can contain sensitive data) ---
+*.sql.gz
+dump_*.sql
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# --- Logs ---
+*.log
+logs/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- IDE ---
+.idea/
+*.swp
+*.swo
+*~
