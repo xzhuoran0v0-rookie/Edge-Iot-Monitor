@@ -13,6 +13,7 @@ import argparse
 import json
 import math
 import random
+import sys
 import time
 import urllib.request
 import urllib.error
@@ -82,14 +83,23 @@ def main():
     parser.add_argument("--interval", type=float, default=INTERVAL_SEC)
     parser.add_argument("--device",   type=str,   default=DEVICE_ID)
     parser.add_argument("--url",      type=str,   default=BACKEND_URL)
+    parser.add_argument("--count",    type=int,   default=0, help="0 = run forever")
+    parser.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print one JSON payload per line (no HTTP POST); useful for piping into C++ ingest tools.",
+    )
     args = parser.parse_args()
 
-    print(f"Simulator started")
-    print(f"  Target  : {args.url}")
-    print(f"  Device  : {args.device}")
-    print(f"  Interval: {args.interval}s")
-    print(f"  Anomaly injection: ~every 30 readings")
-    print("-" * 48)
+    # Keep stdout clean when --stdout is used (so it can be piped to other tools).
+    out = sys.stderr if args.stdout else sys.stdout
+
+    print("Simulator started", file=out)
+    print(f"  Target  : {args.url}", file=out)
+    print(f"  Device  : {args.device}", file=out)
+    print(f"  Interval: {args.interval}s", file=out)
+    print("  Anomaly injection: ~every 30 readings", file=out)
+    print("-" * 48, file=out)
 
     counter = 0
     t0 = time.time()
@@ -100,7 +110,12 @@ def main():
         payload = generate_reading(time.time() - t0, inject_anomaly=inject)
         payload["device_id"] = args.device
 
-        ok = post_reading(payload)
+        if args.stdout:
+            print(json.dumps(payload, ensure_ascii=False))
+            ok = True  # JSON-only mode, no HTTP
+        else:
+            ok = post_reading(payload)
+
         status = "OK" if ok else "FAIL"
         ts = datetime.now().strftime("%H:%M:%S")
         print(
@@ -108,7 +123,10 @@ def main():
             f"temp={payload['temperature']:6.2f}°C  "
             f"hum={payload['humidity']:5.1f}%  "
             f"pres={payload['pressure']:.1f}hPa  → {status}"
-        )
+        , file=out)
+
+        if args.count > 0 and counter >= args.count:
+            break
 
         time.sleep(args.interval)
 

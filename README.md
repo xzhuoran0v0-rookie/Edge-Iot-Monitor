@@ -6,7 +6,7 @@
 ![Platform](https://img.shields.io/badge/MCU-ESP32--S3--N16R8-blue)
 ![Backend](https://img.shields.io/badge/Backend-C%2B%2B17-orange)
 ![AI](https://img.shields.io/badge/AI-Ollama%20%2B%20Qwen2.5--3B-green)
-![DB](https://img.shields.io/badge/Database-MySQL%208.0-lightblue)
+![DB](https://img.shields.io/badge/Database-SQLite%203-lightblue)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 </div>
@@ -17,7 +17,7 @@
 
 ### Overview
 
-An end-to-end edge-intelligence IoT system that collects environmental sensor data on an **ESP32-S3-N16R8** microcontroller, transmits it over **WiFi via HTTP POST** to a **C++17 Linux backend**, performs real-time **IQR-based anomaly detection**, stores results in **MySQL 8.0**, and runs **fully local AI inference** (Ollama + Qwen2.5-3B-Instruct) for contextual analysis — with no cloud dependency.
+An end-to-end edge-intelligence IoT system that collects environmental sensor data on an **ESP32-S3-N16R8** microcontroller, transmits it over **WiFi via HTTP POST** to a **C++17 backend**, performs real-time **IQR-based anomaly detection**, stores results in **SQLite 3**, and runs **fully local AI inference** (Ollama + Qwen2.5-3B-Instruct) for contextual analysis — with no cloud dependency.
 
 ### Key Features
 
@@ -44,7 +44,7 @@ An end-to-end edge-intelligence IoT system that collects environmental sensor da
 | Firmware | ESP-IDF v5.x / Arduino Core for ESP32 |
 | Flashing | esptool.py |
 | Backend | C++17, CMake, Ubuntu 22.04 |
-| Database | MySQL 8.0 (InnoDB) |
+| Database | SQLite 3 |
 | AI Runtime | Ollama + Qwen2.5-3B-Instruct Q4_K_M |
 | Communication | WiFi → HTTP POST `/api/ingest` |
 
@@ -80,8 +80,10 @@ edge-iot-monitor/
 git clone https://github.com/<you>/edge-iot-monitor.git
 cd edge-iot-monitor
 
-# 2. Create the database
-mysql -u root -p < sql/schema.sql
+# 2. Create the database (optional)
+# Option A: create SQLite DB via sqlite3 CLI (if installed)
+sqlite3 sensor.db < sql/schema.sql
+# Option B: let the backend create tables automatically on first run
 
 # 3. Copy and edit config
 cp config/config.example.yaml config/config.yaml
@@ -117,11 +119,11 @@ ESP32-S3 (sensor read)
   └─ MedianFilter (on-device, C++ template)
        └─ HTTP POST /api/ingest  (WiFi, JSON)
             └─ DataIngestor (C++ backend)
-                 ├─ DataFilter → anomaly_events (MySQL)
-                 ├─ StorageEngine → sensor_readings (MySQL)
+                 ├─ DataFilter → anomaly_events (SQLite)
+                 ├─ StorageEngine → sensor_readings (SQLite)
                  └─ AIQueryDispatcher
                       └─ Ollama :11434 (Qwen2.5-3B)
-                           └─ analysis_log (MySQL)
+                           └─ analysis_log (SQLite)
                                 └─ HTTP response → OLED display
 ```
 
@@ -129,7 +131,7 @@ ESP32-S3 (sensor read)
 
 | Phase | Goal | Status |
 |-------|------|--------|
-| 1 | Backend + MySQL + simulated data + Ollama | 🔧 In Progress |
+| 1 | Backend + SQLite + simulated data + Ollama | 🔧 In Progress |
 | 2 | ESP32-S3 firmware + real sensors | ⏳ Planned |
 | 3 | OLED feedback loop (AI → display) | ⏳ Planned |
 
@@ -140,7 +142,7 @@ ESP32-S3 (sensor read)
 ### 项目概述
 
 本项目构建了一个完整的**边缘智能物联网监测系统**。  
-**ESP32-S3-N16R8** 微控制器采集环境传感器数据，通过 **WiFi / HTTP POST** 将数据上传至运行在 Ubuntu 22.04 上的 **C++17 后端服务**，后端执行基于 **IQR 的实时异常检测**，将结果存入 **MySQL 8.0**，并调用本地部署的 **Ollama + Qwen2.5-3B-Instruct** 进行上下文分析 —— 全程零云端依赖。
+**ESP32-S3-N16R8** 微控制器采集环境传感器数据，通过 **WiFi / HTTP POST** 将数据上传至 **C++17 后端服务**，后端执行基于 **IQR 的实时异常检测**，将结果存入 **SQLite 3**，并调用本地部署的 **Ollama + Qwen2.5-3B-Instruct** 进行上下文分析 —— 全程零云端依赖。
 
 ### 核心特性
 
@@ -167,7 +169,7 @@ ESP32-S3 (sensor read)
 | 固件 | ESP-IDF v5.x / Arduino Core for ESP32 |
 | 烧录工具 | esptool.py |
 | 后端 | C++17，CMake，Ubuntu 22.04 |
-| 数据库 | MySQL 8.0（InnoDB） |
+| 数据库 | SQLite 3 |
 | AI 运行时 | Ollama + Qwen2.5-3B-Instruct Q4_K_M |
 | 通信协议 | WiFi → HTTP POST `/api/ingest` |
 
@@ -180,8 +182,10 @@ ESP32-S3 (sensor read)
 git clone https://github.com/<你的用户名>/edge-iot-monitor.git
 cd edge-iot-monitor
 
-# 2. 初始化数据库
-mysql -u root -p < sql/schema.sql
+# 2. 初始化数据库（可选）
+# 方式 A：使用 sqlite3 CLI 初始化（如果你装了 sqlite3）
+sqlite3 sensor.db < sql/schema.sql
+# 方式 B：首次运行后端时自动建表
 
 # 3. 复制并编辑配置文件
 cp config/config.example.yaml config/config.yaml
@@ -214,7 +218,7 @@ esptool.py --chip esp32s3 --port /dev/ttyUSB0 write_flash 0x0 firmware.bin
 
 | 阶段 | 目标 | 状态 |
 |------|------|------|
-| 阶段一 | 后端 + MySQL + 模拟数据 + Ollama | 🔧 进行中 |
+| 阶段一 | 后端 + SQLite + 模拟数据 + Ollama | 🔧 进行中 |
 | 阶段二 | ESP32-S3 固件 + 真实传感器 | ⏳ 计划中 |
 | 阶段三 | OLED 反馈回路（AI 结果 → 显示屏） | ⏳ 计划中 |
 

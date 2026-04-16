@@ -18,18 +18,12 @@ server:
   request_timeout_ms: 5000  # Reject requests that take longer than this (ms)
 
 # ------------------------------------------------------------
-# MySQL 8.0 Database
-# The StorageEngine uses these credentials to connect.
-# Database 'sensor_db' and tables are created by sql/schema.sql
+# SQLite 3 Storage
+# StorageEngine opens a local SQLite database file.
+# Tables are created by `sql/schema.sql` (or automatically by StorageEngine::init()).
 # ------------------------------------------------------------
-database:
-  host: "127.0.0.1"         # MySQL host (localhost if running on same machine)
-  port: 3306                 # Default MySQL port
-  name: "sensor_db"          # Database name (must match schema.sql)
-  user: "iot_user"           # MySQL username
-  password: "CHANGE_ME"      # MySQL password — change this!
-  pool_size: 6               # Number of persistent connections in the pool (4–8 recommended)
-  connect_timeout_s: 10      # Seconds to wait for a connection before failing
+sqlite:
+  db_path: "sensor.db"       # SQLite database file path (relative or absolute)
 
 # ------------------------------------------------------------
 # Ollama AI Runtime
@@ -62,11 +56,12 @@ ai:
   enabled: true                  # Set to false to disable AI calls entirely (for testing)
 
 # ------------------------------------------------------------
-# Storage — Batch Insert Settings
+# Storage — Insert Settings
 # ------------------------------------------------------------
 storage:
-  batch_size: 50             # Accumulate this many records before flushing to MySQL
-  flush_interval_ms: 5000    # Also flush if this much time passes, regardless of batch size
+  # Reserved for future batching/optimizations; SQLite is local so defaults are fine.
+  batch_size: 50
+  flush_interval_ms: 5000
 
 # ------------------------------------------------------------
 # Device Allowlist

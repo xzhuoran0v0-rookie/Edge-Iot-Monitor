@@ -14,7 +14,7 @@
 │                        EDGE DEVICE                              │
 │                                                                 │
 │  ┌──────────┐    I²C    ┌─────────────┐                        │
-│  │ SHT31 /  │──────────▶│  ESP32-S3   │                        │
+│  │ SHT30 /  │──────────▶│  ESP32-S3   │                        │
 │  │ BME280   │           │  N16R8      │                        │
 │  └──────────┘           │             │                        │
 │                         │ MedianFilter│                        │
@@ -42,8 +42,8 @@
 │  └────────┬────────┘                                           │
 │           │                                                     │
 │  ┌────────▼────────┐                                           │
-│  │  StorageEngine  │  MySQL connection pool · Batch insert     │
-│  │  (C++17)        │  Composite index (device_id, timestamp)   │
+│  │  StorageEngine  │  SQLite persistence (local file)          │
+│  │  (C++17)        │  Indexed by (device_id, timestamp)        │
 │  └────────┬────────┘                                           │
 │           │                                                     │
 │  ┌────────▼──────────┐                                         │
@@ -52,7 +52,7 @@
 │  └────────┬──────────┘  Parses response → analysis_log        │
 │           │                                                     │
 │  ┌────────▼────────────────────────────────┐                  │
-│  │           MySQL 8.0 (InnoDB)            │                  │
+│  │              SQLite 3 (file)            │                  │
 │  │  sensor_readings · anomaly_events ·     │                  │
 │  │  analysis_log                           │                  │
 │  └─────────────────────────────────────────┘                  │
@@ -85,7 +85,7 @@ The ESP32-S3 was chosen over alternatives due to its built-in WiFi (eliminating 
 
 ### 2.2 Sensors
 
-**Primary option — SHT31:**
+**Primary option — SHT30:**
 - Temperature: ±0.2 °C accuracy, –40 to +125 °C range
 - Humidity: ±2% RH accuracy
 - Interface: I²C (default address 0x44)
@@ -103,7 +103,7 @@ The ESP32-S3 was chosen over alternatives due to its built-in WiFi (eliminating 
 ### 2.4 I²C Bus Wiring
 
 ```
-ESP32-S3          SHT31 / BME280      SSD1306 OLED
+ESP32-S3          SHT30 / BME280      SSD1306 OLED
 GPIO 8 (SDA) ─────── SDA ─────────── SDA
 GPIO 9 (SCL) ─────── SCL ─────────── SCL
 3.3 V ────────────── VIN ─────────── VCC
@@ -202,13 +202,11 @@ For each incoming reading:
 
 ### 4.3 StorageEngine
 
-**Responsibility:** MySQL connection pooling and persistence.
+**Responsibility:** SQLite persistence (local file-based DB).
 
-- Connection pool: 4–8 connections (configurable)
-- Batch insert: accumulates up to 50 readings before flushing
-- Flush also triggered on 5-second timeout
-- Prepared statements for injection safety
-- Handles reconnection on MySQL timeout
+- Opens a local SQLite database file
+- Creates tables if missing (see `sql/schema.sql`)
+- Uses prepared statements for injection safety
 
 **Tables managed:**
 - `sensor_readings` — every validated reading
@@ -220,7 +218,7 @@ For each incoming reading:
 **Responsibility:** Periodic LLM analysis of sensor data windows.
 
 - Trigger: every N new records (configurable, default 20)
-- Queries last 100 readings from MySQL
+- Queries last 100 readings from SQLite
 - Builds a structured prompt (see below)
 - POSTs to `http://localhost:11434/api/generate` (Ollama REST API)
 - Streams response, accumulates full text
@@ -246,62 +244,19 @@ Respond concisely. Maximum 150 words.
 
 ---
 
-## 5. Database Layer (MySQL 8.0)
+## 5. Database Layer (SQLite 3)
 
 ### 5.1 Tables
 
-**`sensor_readings`**
-```sql
-CREATE TABLE sensor_readings (
-    id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    device_id     VARCHAR(64)    NOT NULL,
-    timestamp     DATETIME(3)    NOT NULL,
-    temperature   FLOAT          NOT NULL,
-    humidity      FLOAT          NOT NULL,
-    pressure      FLOAT          NULL,
-    is_anomaly    TINYINT(1)     NOT NULL DEFAULT 0,
-    created_at    TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_device_time (device_id, timestamp)
-) ENGINE=InnoDB;
-```
+The canonical schema is `sql/schema.sql`.
 
-**`anomaly_events`**
-```sql
-CREATE TABLE anomaly_events (
-    id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    device_id     VARCHAR(64)    NOT NULL,
-    timestamp     DATETIME(3)    NOT NULL,
-    metric        VARCHAR(32)    NOT NULL,
-    observed      FLOAT          NOT NULL,
-    iqr_lower     FLOAT          NOT NULL,
-    iqr_upper     FLOAT          NOT NULL,
-    severity      FLOAT          NOT NULL,
-    created_at    TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_device_time (device_id, timestamp)
-) ENGINE=InnoDB;
-```
-
-**`analysis_log`**
-```sql
-CREATE TABLE analysis_log (
-    id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    device_id     VARCHAR(64)    NOT NULL,
-    window_start  DATETIME(3)    NOT NULL,
-    window_end    DATETIME(3)    NOT NULL,
-    model_name    VARCHAR(128)   NOT NULL,
-    prompt_tokens INT            NULL,
-    analysis_text TEXT           NOT NULL,
-    created_at    TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_device_time (device_id, window_start)
-) ENGINE=InnoDB;
-```
+**Note on storage model:** each incoming JSON payload is stored as multiple rows
+(e.g. `temperature`, `humidity`, and optional `pressure`) in `sensor_readings`.
 
 ### 5.2 Indexing Strategy
 
-The composite index `(device_id, timestamp)` on all three tables ensures efficient:
-- Time-range queries for a specific device (most common query pattern)
-- Window extraction for the DataFilter and AIQueryDispatcher
-- `ORDER BY timestamp` without filesort
+The composite index `(device_id, timestamp)` supports efficient time-window queries
+for `DataFilter` and `AIQueryDispatcher`.
 
 ---
 
@@ -359,12 +314,12 @@ Response: { "response": "<analysis text>", "done": true }
 
 ### Phase 1 — Backend + Simulated Data
 - Implement DataIngestor, DataFilter, StorageEngine, AIQueryDispatcher
-- Set up MySQL schema
+- Set up SQLite schema
 - Validate with `simulate_sensor.py` and `test_ollama.py`
 - No hardware required
 
 ### Phase 2 — ESP32-S3 Firmware
-- Implement sensor reading loop (SHT31 or BME280)
+- Implement sensor reading loop (SHT30 or BME280)
 - Implement MedianFilter on-device
 - Implement WiFi connection + HTTP POST
 - Replace simulator with real hardware
@@ -381,9 +336,9 @@ Response: { "response": "<analysis text>", "done": true }
 
 - The HTTP endpoint is intended for a **local network only** (lab / competition environment)
 - `device_id` is validated against an allowlist (configurable)
-- All MySQL queries use **prepared statements** (no string concatenation)
+- All DB queries use **prepared statements** (no string concatenation)
 - Ollama is bound to `localhost` only — not exposed externally
-- Configuration secrets (DB password) are loaded from `config.yaml`, not hardcoded
+- Configuration secrets (e.g. WiFi creds, if any) are loaded from `config.yaml`, not hardcoded
 
 ---
 

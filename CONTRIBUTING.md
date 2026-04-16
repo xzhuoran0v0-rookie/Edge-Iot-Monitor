@@ -24,26 +24,20 @@ Thank you for contributing! This document explains how the project is structured
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Ubuntu | 22.04 LTS | Backend runtime (VMware VM is fine) |
-| GCC | ≥ 12 | C++17 backend compiler |
-| CMake | ≥ 3.22 | Backend build system |
-| MySQL | 8.0 | Database server |
+| Windows / Linux | — | Dev environment (this repo currently builds on Windows) |
+| GCC (MinGW-w64) / Clang | ≥ 12 | C++17 backend compiler |
+| CMake | ≥ 3.20 (tested with 4.3.1) | Backend build system |
+| SQLite | 3.x | Local database (file-based) |
 | Python | ≥ 3.10 | Simulation and test scripts |
-| Ollama | latest | Local LLM runtime |
+| Ollama | latest (optional) | Local LLM runtime (only needed for AI tests) |
 | esptool.py | latest | Firmware flashing (Phase 2+) |
-| ESP-IDF | 5.x | Firmware build (Phase 2+) |
+| PlatformIO / ESP-IDF | — | Firmware build (Phase 2+) |
 
-### Install Backend Dependencies (Ubuntu 22.04)
+### Python Dependencies
 
 ```bash
-sudo apt update
-sudo apt install -y \
-    build-essential cmake git \
-    libmysqlclient-dev \
-    libcurl4-openssl-dev \
-    nlohmann-json3-dev
-
-pip3 install requests pyyaml
+# Needed by scripts/test_ollama.py only:
+pip install requests
 ```
 
 ### Install Ollama and Pull Model
@@ -62,7 +56,11 @@ ollama run qwen2.5:3b-instruct-q4_K_M "Say hello in one sentence."
 ### Database Setup
 
 ```bash
-mysql -u root -p < sql/schema.sql
+# Option A (requires sqlite3 CLI): create a DB file from schema.sql
+sqlite3 sensor.db < sql/schema.sql
+
+# Option B: run the ingest tool once; it will execute sql/schema.sql automatically
+# and create the DB file if missing.
 ```
 
 ---
@@ -80,24 +78,22 @@ edge-iot-monitor/
 ├── config/
 │   └── config.example.yaml    # Template — copy to config.yaml
 ├── sql/
-│   └── schema.sql             # MySQL schema (3 tables)
+│   └── schema.sql             # SQLite schema (3 tables)
 ├── scripts/
-│   ├── simulate_sensor.py     # Sends fake ESP32 POSTs to backend
+│   ├── simulate_sensor.py     # Generates JSON readings (HTTP POST or --stdout)
 │   └── test_ollama.py         # Verifies Ollama/Qwen2 pipeline
 ├── firmware/
-│   └── src/                   # ESP32-S3 source (Phase 2)
-│       ├── main.cpp
-│       ├── MedianFilter.h
-│       ├── SensorReader.h/.cpp
-│       ├── WiFiManager.h/.cpp
-│       └── OLEDDisplay.h/.cpp
+│   └── src/
+│       └── main.cpp           # Firmware entry (currently minimal)
 └── backend/
-    └── src/                   # C++ backend source (Phase 1)
-        ├── main.cpp
-        ├── DataIngestor.h/.cpp
-        ├── DataFilter.h/.cpp
-        ├── StorageEngine.h/.cpp
-        └── AIQueryDispatcher.h/.cpp
+    ├── CMakeLists.txt          # Backend build targets
+    └── src/                    # C++ backend source (Phase 1, partial)
+        ├── StorageEngine.h/.cpp    # SQLite persistence (implemented)
+        ├── ingest_stdin.cpp        # Tool: stdin JSON -> SQLite inserts
+        ├── DataIngestor.h          # Placeholder (empty)
+        ├── DataFilter.h/.cpp       # Placeholder (empty)
+        ├── AIQueryDispatcher.h/.cpp # Placeholder (empty)
+        └── main.cpp                # Placeholder (empty)
 ```
 
 ---
@@ -107,20 +103,24 @@ edge-iot-monitor/
 ### Building
 
 ```bash
-cd backend
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-./build/edge_backend --config ../config/config.yaml
+# Windows (MinGW):
+cmake -S . -B build-cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+cmake --build build-cmake -j 8
+
+# If you're using MSVC, pick a Visual Studio generator instead.
+
+# Build artifact:
+# - Windows: build-cmake/backend/edge_ingest.exe
 ```
 
 ### Module Responsibilities
 
 | Module | File(s) | Role |
 |--------|---------|------|
-| `DataIngestor` | DataIngestor.h/.cpp | HTTP server, JSON parse & validate |
-| `DataFilter` | DataFilter.h/.cpp | Sliding IQR anomaly detection |
-| `StorageEngine` | StorageEngine.h/.cpp | MySQL pool, batch insert |
-| `AIQueryDispatcher` | AIQueryDispatcher.h/.cpp | Prompt build, Ollama call, log result |
+| `DataIngestor` | DataIngestor.h/.cpp | HTTP server, JSON parse & validate (TODO) |
+| `DataFilter` | DataFilter.h/.cpp | Sliding IQR anomaly detection (TODO) |
+| `StorageEngine` | StorageEngine.h/.cpp | SQLite persistence |
+| `AIQueryDispatcher` | AIQueryDispatcher.h/.cpp | Prompt build, Ollama call, log result (TODO) |
 
 ### Adding a New C++ Module
 
@@ -191,7 +191,7 @@ Do **not** change these without updating `config.yaml` and the firmware I²C ini
 - All schema changes go in `sql/schema.sql`
 - For incremental migrations, add a new file: `sql/migration_v2.sql`, etc.
 - Never modify existing column names without updating all backend prepared statements
-- After any schema change, run: `mysql -u root -p sensor_db < sql/schema.sql`
+- After any schema change, re-apply schema (or create a fresh DB): `sqlite3 sensor.db < sql/schema.sql`
 
 ---
 
@@ -219,9 +219,7 @@ Do **not** change these without updating `config.yaml` and the firmware I²C ini
 ### SQL
 
 - Table and column names: `snake_case`
-- All tables must have: `id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY` and `created_at TIMESTAMP`
-- All time-series tables must have: composite index on `(device_id, timestamp)`
-- Use `InnoDB` engine exclusively
+- All time-series tables should have: composite index on `(device_id, timestamp)`
 
 ---
 
@@ -254,23 +252,18 @@ refactor(storage): replace raw pointer with unique_ptr in pool
 ### Backend Unit Tests
 
 ```bash
-cd backend
-cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON
-cmake --build build
-ctest --test-dir build --output-on-failure
+# (Unit tests not wired yet in this repo snapshot.)
+# When tests are added, they should be runnable via CTest from the CMake build dir.
 ```
 
 ### Integration Tests (simulate full pipeline)
 
 ```bash
-# Terminal 1: start backend
-./build/edge_backend --config ../config/config.yaml
+# Terminal 3: check SQLite (if you have sqlite3 CLI)
+sqlite3 sensor.db "SELECT COUNT(*) FROM sensor_readings;"
 
-# Terminal 2: send simulated data
-python3 scripts/simulate_sensor.py --count 100 --interval 0.5
-
-# Terminal 3: check MySQL
-mysql -u root -p sensor_db -e "SELECT COUNT(*) FROM sensor_readings;"
+# Quick local ingest without HTTP:
+python scripts/simulate_sensor.py --count 100 --stdout --interval 0.5 | build-cmake/backend/edge_ingest.exe --db sensor.db
 ```
 
 ### Ollama Test
