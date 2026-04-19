@@ -65,7 +65,7 @@ public:
 
 private:
     int window_size_;        ///< 窗口大小
-    double iqr_multipliter_; ///< IQR倍数
+    double iqr_multiplier_; ///< IQR倍数
 
     /**
      * @brife 滑动窗口存储
