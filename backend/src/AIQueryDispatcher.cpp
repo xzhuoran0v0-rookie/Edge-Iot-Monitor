@@ -1,7 +1,6 @@
 #include "AIQueryDispatcher.h"
 #include "nlohmann/json.hpp"
 
-#define CPPHTTPLIB_OPENSSL_SUPPORT 0
 #include "httplib.h"
 
 #include <iostream>
@@ -218,6 +217,5 @@ void AIQueryDispatcher::saveResult(
               << result << "\n"
               << "[AIQuery] ==============\n";
 
-    // TODO:
-    // storage_.insertAnalysisLog(device_id, prompt, result);
+    storage_.insertAnalysisLog(device_id, prompt, result);
 }

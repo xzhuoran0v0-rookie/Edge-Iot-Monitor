@@ -31,9 +31,9 @@ static std::string nowISo8601()
 
     std::tm utc_tm{};
 #ifdef _WIN32
-    getime_s(&utc_tm, &t);
+    gmtime_s(&utc_tm, &t);
 #else
-    getime_r(&t, &utc_tm);
+    gmtime_r(&t, &utc_tm);
 #endif
 
     std::ostringstream ss;
@@ -112,7 +112,7 @@ void DataIngestor::start(int port)
                  std::string response;
                  // 将HTTP body交给业务流水线处理
                  handleIngest(req.body, response);
-                 res.set_content(respond, "application/json");
+                 res.set_content(response, "application/json");
              });
     std::cout << "[DataIngestor] Listening on 0.0.0.0:" << port << std::endl;
 
@@ -178,7 +178,7 @@ void DataIngestor::handleIngest(const std::string &raw_json,
     }
 
     // 4.AI分析
-    ai_onNewData(readings);
+    ai_.onNewData(readings);
 
     // 5.返回响应
     response_json = R"({"status":"ok","anomaly":)" +
@@ -237,6 +237,7 @@ bool DataIngestor::parseJson(const std::string &raw,
 
             t.device_timestamp = device_ts; // 参考时间
             t.server_timestamp = server_ts; // 权威时间
+            t.timestamp = server_ts;
 
             out.push_back(t);
         }
@@ -252,6 +253,7 @@ bool DataIngestor::parseJson(const std::string &raw,
 
             h.device_timestamp = device_ts;
             h.server_timestamp = server_ts;
+            h.timestamp = server_ts;
 
             out.push_back(h);
         }

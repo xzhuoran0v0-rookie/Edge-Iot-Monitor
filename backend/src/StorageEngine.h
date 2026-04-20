@@ -14,7 +14,15 @@ struct SensorReading
     std::string sensor_type;
     double value;
     std::string unit;
-    std::string timestamp; // insert itself
+    // Backward-compatible field used by some utilities (e.g. ingest_stdin.cpp).
+    // Prefer server_timestamp (UTC, ISO8601 with 'Z') for storage/query/prompt.
+    std::string timestamp;
+
+    // UTC server timestamp (ISO8601 + 'Z'), preferred for storage/query/prompt.
+    std::string server_timestamp;
+
+    // Optional device-provided timestamp (format depends on device).
+    std::string device_timestamp;
 };
 
 /**
@@ -63,6 +71,18 @@ public:
      */
     std::vector<SensorReading> getRecentReadings(const std::string &device_id, int limit);
 
+    /**
+     * @brief 写入 AI 分析结果
+     *
+     * @param device_id 设备ID
+     * @param prompt    输入prompt
+     * @param result    模型输出
+     * @return 是否成功
+     */
+    bool insertAnalysisLog(const std::string &device_id,
+                           const std::string &prompt,
+                           const std::string &result);
+
 private:
     std::string db_path_;   // 数据库文件路径
     sqlite3 *db_ = nullptr; // SQLite 数据库连接句柄
@@ -79,15 +99,4 @@ private:
 
     bool execute(const std::string &sql);
 
-    /**
-     * @brief 写入 AI 分析结果
-     *
-     * @param device_id 设备ID
-     * @param prompt    输入prompt
-     * @param result    模型输出
-     * @return 是否成功
-     */
-    bool insertAnalysisLog(const std::string &device_id,
-                           const std::string &prompt,
-                           const std::string &result);
 };

@@ -1,7 +1,9 @@
-#include <StorageEngine.h>
+#include "StorageEngine.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <chrono>
+#include <iomanip>
 
 /**
  * @brief 构造函数
@@ -87,7 +89,8 @@ bool StorageEngine::insertReading(const SensorReading &r)
     sqlite3_bind_text(stmt, 2, r.sensor_type.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_double(stmt, 3, r.value);
     sqlite3_bind_text(stmt, 4, r.unit.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 5, r.timestamp.c_str(), -1, SQLITE_TRANSIENT);
+    const std::string &ts = !r.server_timestamp.empty() ? r.server_timestamp : r.timestamp;
+    sqlite3_bind_text(stmt, 5, ts.c_str(), -1, SQLITE_TRANSIENT);
 
     const int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -140,6 +143,7 @@ std::vector<SensorReading> StorageEngine::getRecentReadings(
         r.value = sqlite3_column_double(stmt, 2);
         r.unit = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 3));
         r.timestamp = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 4));
+        r.server_timestamp = r.timestamp;
 
         results.push_back(r);
     }
@@ -177,6 +181,22 @@ bool StorageEngine::execute(const std::string &sql)
     return true;
 }
 
+static std::string nowIso8601Utc()
+{
+    auto now = std::chrono::system_clock::now();
+    auto t = std::chrono::system_clock::to_time_t(now);
+
+    std::tm utc_tm{};
+#ifdef _WIN32
+    gmtime_s(&utc_tm, &t);
+#else
+    gmtime_r(&t, &utc_tm);
+#endif
+
+    std::ostringstream ss;
+    ss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
+    return ss.str();
+}
 
 /**
  * @brief 写入 AI 分析结果
@@ -186,20 +206,20 @@ bool StorageEngine::execute(const std::string &sql)
  * @param result    模型输出
  * @return 是否成功
  */
-bool StorageEngine::insertAnalysisLog(const std::string& device_id,
-                                      const std::string& prompt,
-                                      const std::string& result)
+bool StorageEngine::insertAnalysisLog(const std::string &device_id,
+                                      const std::string &prompt,
+                                      const std::string &result)
 {
-    const std::string sql =
+    static constexpr const char *kSql =
         "INSERT INTO analysis_log (device_id, prompt, result, created_at) "
         "VALUES (?, ?, ?, ?);";
 
-    sqlite3_stmt* stmt = nullptr;
+    sqlite3_stmt *stmt = nullptr;
 
     // 准备 SQL
-    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-        std::cerr << "[Storage] prepare failed: "
-                  << sqlite3_errmsg(db_) << std::endl;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "[Storage] prepare failed: " << sqlite3_errmsg(db_) << std::endl;
         return false;
     }
 
@@ -208,14 +228,14 @@ bool StorageEngine::insertAnalysisLog(const std::string& device_id,
     sqlite3_bind_text(stmt, 2, prompt.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, result.c_str(), -1, SQLITE_TRANSIENT);
 
-    // 生成 UTC 时间
-    std::string now = static std::string nowIso8601();  // 你已有函数 or 复用 nowIso8601
+    // UTC 时间（ISO8601 + Z）
+    const std::string now = nowIso8601Utc();
     sqlite3_bind_text(stmt, 4, now.c_str(), -1, SQLITE_TRANSIENT);
 
     // 执行
-    if (sqlite3_step(stmt) != SQLITE_DONE) {
-        std::cerr << "[Storage] insert failed: "
-                  << sqlite3_errmsg(db_) << std::endl;
+    if (sqlite3_step(stmt) != SQLITE_DONE)
+    {
+        std::cerr << "[Storage] insert failed: " << sqlite3_errmsg(db_) << std::endl;
         sqlite3_finalize(stmt);
         return false;
     }
