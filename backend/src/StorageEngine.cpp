@@ -176,3 +176,50 @@ bool StorageEngine::execute(const std::string &sql)
 
     return true;
 }
+
+
+/**
+ * @brief 写入 AI 分析结果
+ *
+ * @param device_id 设备ID
+ * @param prompt    输入prompt
+ * @param result    模型输出
+ * @return 是否成功
+ */
+bool StorageEngine::insertAnalysisLog(const std::string& device_id,
+                                      const std::string& prompt,
+                                      const std::string& result)
+{
+    const std::string sql =
+        "INSERT INTO analysis_log (device_id, prompt, result, created_at) "
+        "VALUES (?, ?, ?, ?);";
+
+    sqlite3_stmt* stmt = nullptr;
+
+    // 准备 SQL
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        std::cerr << "[Storage] prepare failed: "
+                  << sqlite3_errmsg(db_) << std::endl;
+        return false;
+    }
+
+    // 绑定参数
+    sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, prompt.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, result.c_str(), -1, SQLITE_TRANSIENT);
+
+    // 生成 UTC 时间
+    std::string now = static std::string nowIso8601();  // 你已有函数 or 复用 nowIso8601
+    sqlite3_bind_text(stmt, 4, now.c_str(), -1, SQLITE_TRANSIENT);
+
+    // 执行
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        std::cerr << "[Storage] insert failed: "
+                  << sqlite3_errmsg(db_) << std::endl;
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}

@@ -78,4 +78,16 @@ private:
      */
 
     bool execute(const std::string &sql);
+
+    /**
+     * @brief 写入 AI 分析结果
+     *
+     * @param device_id 设备ID
+     * @param prompt    输入prompt
+     * @param result    模型输出
+     * @return 是否成功
+     */
+    bool insertAnalysisLog(const std::string &device_id,
+                           const std::string &prompt,
+                           const std::string &result);
 };
