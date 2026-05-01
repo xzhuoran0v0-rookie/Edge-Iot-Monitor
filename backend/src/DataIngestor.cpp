@@ -9,6 +9,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 
 using json = nlohmann::json;
 
@@ -219,9 +220,31 @@ bool DataIngestor::parseJson(const std::string &raw,
         std::string device_id = j.at("device_id").get<std::string>();
 
         // 设备时间
-        std::string device_ts = j.contains("timestamp")
-                                    ? j.at("timestamp").get<std::string>()
-                                    : "";
+        std::string device_ts;
+        if (j.contains("timestamp"))
+        {
+            const auto &ts = j.at("timestamp");
+            if (ts.is_string())
+            {
+                device_ts = ts.get<std::string>();
+            }
+            else if (ts.is_number_integer())
+            {
+                device_ts = std::to_string(ts.get<long long>());
+            }
+            else if (ts.is_number_float())
+            {
+                device_ts = std::to_string(ts.get<double>());
+            }
+            else if (ts.is_null())
+            {
+                device_ts.clear();
+            }
+            else
+            {
+                throw std::runtime_error("timestamp must be string or number");
+            }
+        }
         // 服务器时间(UTC)
         std::string server_ts = nowISo8601();
 

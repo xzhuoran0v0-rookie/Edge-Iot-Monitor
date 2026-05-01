@@ -35,8 +35,8 @@ public:
      */
     explicit AIQueryDispatcher(
         StorageEngine &storage,
-        std::string ollama_url = "http://localhost.11434",
-        std::string model = "qwen2.5:3b-instruct-q4_K_M",
+        std::string ollama_url = "http://localhost:11434",
+        std::string model = "qwen2.5:3b",
         int trigger_count = 20,
         int window_size = 10);
 

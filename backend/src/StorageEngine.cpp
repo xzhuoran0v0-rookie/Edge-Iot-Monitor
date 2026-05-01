@@ -211,7 +211,7 @@ bool StorageEngine::insertAnalysisLog(const std::string &device_id,
                                       const std::string &result)
 {
     static constexpr const char *kSql =
-        "INSERT INTO analysis_log (device_id, prompt, result, created_at) "
+        "INSERT INTO analysis_log (device_id, prompt, response, timestamp) "
         "VALUES (?, ?, ?, ?);";
 
     sqlite3_stmt *stmt = nullptr;

@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 BACKEND_URL  = "http://127.0.0.1:8080/api/ingest"
 DEVICE_ID    = "esp32-s3-sim-001"
 INTERVAL_SEC = 2.0   # seconds between readings
+TIMEOUT_SEC  = 30.0  # HTTP timeout (LLM analysis may take time)
 
 # ---------------------------------------------------------------------------
 # Realistic sensor simulation with occasional anomalies
@@ -59,7 +60,7 @@ def generate_reading(t: float, inject_anomaly: bool = False) -> dict:
     }
 
 
-def post_reading(payload: dict) -> bool:
+def post_reading(payload: dict, timeout_sec: float) -> bool:
     data = json.dumps(payload).encode("utf-8")
     req  = urllib.request.Request(
         BACKEND_URL,
@@ -68,7 +69,7 @@ def post_reading(payload: dict) -> bool:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             return resp.status == 200
     except urllib.error.URLError as e:
         print(f"  [ERR] POST failed: {e.reason}")
@@ -83,6 +84,7 @@ def main():
     parser.add_argument("--interval", type=float, default=INTERVAL_SEC)
     parser.add_argument("--device",   type=str,   default=DEVICE_ID)
     parser.add_argument("--url",      type=str,   default=BACKEND_URL)
+    parser.add_argument("--timeout",  type=float, default=TIMEOUT_SEC, help="HTTP timeout seconds")
     parser.add_argument("--count",    type=int,   default=0, help="0 = run forever")
     parser.add_argument(
         "--stdout",
@@ -98,6 +100,7 @@ def main():
     print(f"  Target  : {args.url}", file=out)
     print(f"  Device  : {args.device}", file=out)
     print(f"  Interval: {args.interval}s", file=out)
+    print(f"  Timeout : {args.timeout}s", file=out)
     print("  Anomaly injection: ~every 30 readings", file=out)
     print("-" * 48, file=out)
 
@@ -114,7 +117,7 @@ def main():
             print(json.dumps(payload, ensure_ascii=False))
             ok = True  # JSON-only mode, no HTTP
         else:
-            ok = post_reading(payload)
+            ok = post_reading(payload, args.timeout)
 
         status = "OK" if ok else "FAIL"
         ts = datetime.now().strftime("%H:%M:%S")
