@@ -29,10 +29,10 @@ public:
     /**
      * @brief 构造函数
      *
-     * @param window_size    滑动窗口大小
+     * @param window_seconds    滑动窗口大小
      * @param iqr_multiplier IQR倍数
      */
-    explicit DataFilter(int window_size = 60, double iqr_multiplier = 1.5);
+    explicit DataFilter(int window_seconds = 60, double iqr_multiplier = 1.5,int min_samples=10);
 
     /**
      * @brief 检测一条数据是否正常,并更新窗口
@@ -64,8 +64,20 @@ public:
                const std::string &sensor_type);
 
 private:
-    int window_size_;        ///< 窗口大小
+    /**
+     * @brief 使得每条数据同时记录数值以及时间
+     * 
+     * @param value 数值
+     * @param unix_sec epoch秒，计算距离上次记录过去的时间
+     */
+    struct WindowSample{
+        double value;
+        int64_t unix_sec;
+    };
+
+    int window_seconds_;        ///< 窗口大小
     double iqr_multiplier_; ///< IQR倍数
+    int min_samples_;       ///< 最小样本数
 
     /**
      * @brife 滑动窗口存储
@@ -75,7 +87,7 @@ private:
      *
      *
      */
-    std::unordered_map<std::string, std::deque<double>> windows_;
+    std::unordered_map<std::string, std::deque<WindowSample>> windows_;
 
     /**
      * @brief 构造 map key

@@ -7,6 +7,7 @@
 
 class DataFilter;
 class AIQueryDispatcher;
+class CloudSync;
 
 /**
  * @brief 数据接入模块(HTTP 入口)
@@ -24,6 +25,8 @@ class AIQueryDispatcher;
  *   数据存储（StorageEngine）
  *        ↓
  *   AI分析（AIQueryDispatcher）
+ *        ↓
+ *   云同步（CloudSync）
  *
  */
 class DataIngestor
@@ -37,7 +40,10 @@ public:
     DataIngestor(
         StorageEngine &storage,
         DataFilter &filter,
-        AIQueryDispatcher &ai);
+        AIQueryDispatcher &ai,
+        CloudSync &cloud,
+        double temp_min = -40.0, double temp_max = 85.0,
+        double hum_min = 0.0, double hum_max = 100.0);
 
     ~DataIngestor();
 
@@ -107,6 +113,11 @@ private:
     StorageEngine &storage_; ///< 数据库存储模块
     DataFilter &filter_;     ///< 异常检测模块(IQR算法)
     AIQueryDispatcher &ai_;  ///< 本地AI分析模块
+    CloudSync &cloud_;       ///< 云端同步模块
+
+    //=========== 校验范围（来自 AppConfig）============//
+    double temp_min_, temp_max_;
+    double hum_min_,  hum_max_;
 
     std::unique_ptr<Impl> impl_;
 };

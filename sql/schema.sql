@@ -48,3 +48,10 @@ CREATE TABLE IF NOT EXISTS analysis_log (
 
 CREATE INDEX IF NOT EXISTS idx_analysis_log_device_time
     ON analysis_log (device_id, timestamp);
+
+-- Cloud sync progress tracker (used by CloudSync)
+-- One row per table, stores the last synced row id.
+CREATE TABLE IF NOT EXISTS sync_status (
+    table_name      TEXT PRIMARY KEY,
+    last_synced_id  INTEGER NOT NULL DEFAULT 0
+);

@@ -29,12 +29,12 @@ sqlite:
 # Ollama AI Runtime
 # The AIQueryDispatcher calls Ollama's REST API at this address.
 # Ollama must be running: `ollama serve`
-# Model must be pulled: `ollama pull qwen2.5:3b-instruct-q4_K_M`
+# Model must be pulled: `ollama pull qwen2.5:3b`
 # ------------------------------------------------------------
 ollama:
   host: "http://127.0.0.1"  # Ollama server address (local only — do not expose externally)
   port: 11434                # Default Ollama port
-  model: "qwen2.5:3b-instruct-q4_K_M"  # Exact model tag as shown in `ollama list`
+  model: "qwen2.5:3b"  # Exact model tag as shown in `ollama list`
   timeout_s: 120             # Max seconds to wait for inference response (CPU can be slow)
   max_tokens: 512            # Maximum tokens in the AI response
   temperature: 0.3           # Inference temperature (lower = more deterministic)
@@ -95,9 +95,23 @@ validation:
 # ------------------------------------------------------------
 logging:
   level: "info"              # Options: debug, info, warn, error
-  file: "/var/log/edge_backend.log"   # Log file path (leave empty "" to log to stdout only)
+  file: ""                   # Log file path (leave empty "" to log to stdout only)
   max_size_mb: 50            # Rotate log file when it reaches this size
   console: true              # Also print logs to stdout
+
+# ------------------------------------------------------------
+# Cloud Sync — Huawei IoTDA
+# ------------------------------------------------------------
+# Set enabled: true and fill in credential after device registration.
+# credential is the device secret assigned by IoTDA — NEVER commit this file.
+# ------------------------------------------------------------
+cloud:
+  enabled: false             # Set to true after registration
+  provider: "huawei"         # Cloud provider (currently only huawei)
+  endpoint: ""               # e.g. "https://iotda.cn-north-4.myhuaweicloud.com"
+  project_id: ""             # Huawei Cloud project ID
+  device_id: ""              # Device ID registered in IoTDA
+  credential: ""             # Device secret (HMAC-SHA256 signing key)
 
 # ------------------------------------------------------------
 # I²C Pin Assignment (informational — used by firmware, not backend)

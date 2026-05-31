@@ -29,16 +29,21 @@ target_include_directories(edge_ingest PRIVATE
 option(EDGE_BUILD_SERVER "Build HTTP ingest server (edge_server)" OFF)
 
 if(EDGE_BUILD_SERVER)
+  # yaml-cpp for config parsing
+  find_package(yaml-cpp REQUIRED)
+
   # HTTP server: POST /api/ingest -> SQLite inserts
   add_executable(edge_server
     src/main.cpp
     src/DataIngestor.cpp
     src/DataFilter.cpp
     src/AIQueryDispatcher.cpp
+    src/ConfigLoader.cpp
+    src/CloudSync.cpp
     src/httplib.h
     src/json.hpp
   )
-  target_link_libraries(edge_server PRIVATE edge_storage)
+  target_link_libraries(edge_server PRIVATE edge_storage yaml-cpp::yaml-cpp)
   target_include_directories(edge_server PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src
   )

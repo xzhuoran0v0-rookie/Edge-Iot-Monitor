@@ -98,6 +98,33 @@ bool StorageEngine::insertReading(const SensorReading &r)
 }
 
 /**
+ * @brief 持久化一条 IQR 异常检测事件
+ *
+ * 与 insertReading 共享相同的列模式（device_id, sensor_type, value, timestamp），
+ * 但写入 anomaly_events 表以便与普通读数隔离查询。
+ */
+bool StorageEngine::insertAnomaly(const SensorReading &r)
+{
+    static constexpr const char *kSql =
+        "INSERT INTO anomaly_events (device_id, sensor_type, value, timestamp) "
+        "VALUES (?, ?, ?, ?);";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_text(stmt, 1, r.device_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, r.sensor_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 3, r.value);
+    const std::string &ts = !r.server_timestamp.empty() ? r.server_timestamp : r.timestamp;
+    sqlite3_bind_text(stmt, 4, ts.c_str(), -1, SQLITE_TRANSIENT);
+
+    const int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+/**
  * @brief 获取某个设备最近的 N 条数据
  *
  * @param device_id 设备ID

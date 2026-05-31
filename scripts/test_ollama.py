@@ -4,7 +4,7 @@ test_ollama.py
 ==============
 Verifies the full local AI inference pipeline:
   1. Checks that Ollama is running and reachable
-  2. Checks that the Qwen2.5-3B-Instruct Q4_K_M model is available
+  2. Checks that the Qwen2.5-3B model is available
   3. Sends a synthetic sensor data window prompt (exactly as AIQueryDispatcher would)
   4. Displays the model's response, token counts, and inference time
   5. Exits 0 on success, 1 on any failure
@@ -46,7 +46,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 DEFAULT_HOST = "http://127.0.0.1"
 DEFAULT_PORT = 11434
-DEFAULT_MODEL = "qwen2.5:3b-instruct-q4_K_M"
+DEFAULT_MODEL = "qwen2.5:3b"
 DEFAULT_TIMEOUT = 180  # seconds — CPU inference can take 30–60 s
 
 
@@ -86,7 +86,7 @@ def get_available_models(base_url: str, timeout: float = 5.0) -> list[str]:
 def model_is_available(base_url: str, model_name: str, timeout: float = 5.0) -> bool:
     """Return True if model_name is in the list of pulled models."""
     models = get_available_models(base_url, timeout)
-    # Exact match or prefix match (e.g. "qwen2.5:3b-instruct-q4_K_M" matches "qwen2.5:3b-instruct-q4_K_M:latest")
+    # Exact match or prefix match (e.g. "qwen2.5:3b" matches "qwen2.5:3b:latest")
     for m in models:
         if m == model_name or m.startswith(model_name):
             return True
@@ -131,46 +131,40 @@ def build_synthetic_sensor_window(
         else:
             records[idx]["hum"] += random.uniform(15.0, 25.0)
 
-    timestamps = [r["ts"] for r in records]
-    temps = [r["temp"] for r in records]
-    hums = [r["hum"] for r in records]
+    # Flatten into per-metric rows, matching C++ SensorReading model
+    readings = []
+    for r in records:
+        readings.append({"sensor_type": "temperature", "value": r["temp"], "unit": "C", "timestamp": r["ts"]})
+        readings.append({"sensor_type": "humidity",    "value": r["hum"],  "unit": "%", "timestamp": r["ts"]})
 
     return {
         "device_id": device_id,
-        "timestamps": timestamps,
-        "temperatures": temps,
-        "humidities": hums,
+        "readings": readings,
         "anomaly_count": n_anomalies,
-        "window_start": timestamps[0],
-        "window_end": timestamps[-1],
+        "window_start": records[0]["ts"],
+        "window_end":  records[-1]["ts"],
     }
 
 
 def build_prompt(window: dict) -> str:
     """
     Build the exact prompt that AIQueryDispatcher sends to Ollama.
-    Changing this format here should be mirrored in AIQueryDispatcher.cpp.
+    Mirrors AIQueryDispatcher.cpp — keep the two in sync.
     """
-    temp_str = ", ".join(f"{t:.2f}" for t in window["temperatures"])
-    hum_str = ", ".join(f"{h:.1f}" for h in window["humidities"])
-    ts_str = ", ".join(window["timestamps"])
-
-    return f"""You are an environmental monitoring AI assistant.
-Analyse the following sensor data window and provide:
-1. A trend summary (2-3 sentences)
-2. Any anomalies or concerns
-3. A recommended action if warranted
-
-Sensor data window:
-  Device ID    : {window['device_id']}
-  Time range   : {window['window_start']} – {window['window_end']} UTC
-  Readings     : {len(window['temperatures'])} samples (10-second intervals)
-  Timestamps   : {ts_str}
-  Temperatures : {temp_str} (°C)
-  Humidity     : {hum_str} (%RH)
-  Detected anomalies (IQR flagged): {window['anomaly_count']}
-
-Respond concisely. Maximum 150 words. Be specific about values where relevant."""
+    lines = []
+    lines.append("You are an IoT sensor data analyst.")
+    lines.append(f"Analyze the recent readings from device [{window['device_id']}] and provide insights.")
+    lines.append("")
+    lines.append("## Sensor Readings")
+    for r in window["readings"]:
+        lines.append(f"{r['timestamp']}  {r['sensor_type']}  {r['value']} {r['unit']}")
+    lines.append("")
+    lines.append("Answer in 2-3 sentences:")
+    lines.append("1. Is the system stable?")
+    lines.append("2. Any anomaly or trend?")
+    lines.append("3. Suggestions?")
+    lines.append("Be concise.")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +237,7 @@ def main():
 
     print()
     print("=" * 62)
-    print("  Ollama + Qwen2 Pipeline Verification")
+    print("  Ollama + Qwen2.5 Pipeline Verification")
     print("=" * 62)
     print(f"  Target : {base_url}")
     print(f"  Model  : {args.model}")
@@ -286,7 +280,8 @@ def main():
         print(f"  ✗ Model '{args.model}' is NOT available")
         print()
         print("  Pull it with:")
-        print(f"    ollama pull {args.model}")        all_passed = False
+        print(f"    ollama pull {args.model}")
+        all_passed = False
         if args.check_only:
             sys.exit(1)
 
@@ -312,7 +307,7 @@ def main():
     )
     prompt = build_prompt(window)
     print(f"  Window   : {window['window_start']} – {window['window_end']} UTC")
-    print(f"  Records  : {args.records}")
+    print(f"  Readings : {len(window['readings'])} rows ({args.records} samples)")
     print(f"  Anomalies: {args.anomalies} injected")
     print()
     print("  Prompt preview (first 400 chars):")
@@ -379,10 +374,9 @@ def main():
         print("  Next steps:")
         print("    1. Start the C++ backend:  ./build/edge_backend")
         print("    2. Run the simulator:      python3 scripts/simulate_sensor.py")
-        print("    3. Check MySQL results:")
-        print("         mysql -u root -p sensor_db")
-        print("         SELECT COUNT(*) FROM sensor_readings;")
-        print("         SELECT analysis_text FROM analysis_log ORDER BY id DESC LIMIT 1\\G")
+        print("    3. Check SQLite results:")
+        print("         sqlite3 sensor.db \"SELECT COUNT(*) FROM sensor_readings;\"")
+        print("         sqlite3 sensor.db \"SELECT response FROM analysis_log ORDER BY id DESC LIMIT 1;\"")
         sys.exit(0)
     else:
         print("  ✗ Inference completed but response appears empty or incomplete.")

@@ -29,7 +29,7 @@
                     (JSON payload, port 8080)
                                  │
 ┌───────────────────────────────▼─────────────────────────────────┐
-│                     LINUX BACKEND (Ubuntu 22.04 / VMware VM)    │
+│                     macOS BACKEND (Apple M5)                    │
 │                                                                 │
 │  ┌─────────────────┐                                           │
 │  │  DataIngestor   │  HTTP server · JSON validation            │
@@ -59,8 +59,8 @@
 │                                                                 │
 │  ┌──────────────────────────────────────────┐                  │
 │  │  Ollama Runtime (localhost:11434)         │                  │
-│  │  Model: Qwen2.5-3B-Instruct Q4_K_M        │                  │
-│  │  RAM usage: ~1.9 GB · 100% local           │                  │
+│  │  Model: Qwen2.5-3B                          │                  │
+│  │  RAM usage: ~1.9 GB · 100% local            │                  │
 │  └──────────────────────────────────────────┘                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -156,7 +156,7 @@ Median filters are better than moving averages for sensor data because they reje
 
 ---
 
-## 4. Backend Layer (C++17, Ubuntu 22.04)
+## 4. Backend Layer (C++17, macOS / Apple M5)
 
 ### 4.1 DataIngestor
 
@@ -227,19 +227,18 @@ For each incoming reading:
 
 **Prompt template:**
 ```
-You are an environmental monitoring AI assistant.
-Analyse the following sensor data window and provide:
-1. A trend summary (2-3 sentences)
-2. Any anomalies or concerns
-3. A recommended action if warranted
+You are an IoT sensor data analyst.
+Analyze the recent readings from device [{device_id}] and provide insights.
 
-Data window (last 100 readings from device {device_id}):
-Timestamps: {timestamps}
-Temperatures (°C): {temps}
-Humidity (%RH): {hums}
+## Sensor Readings
+{timestamp}  {sensor_type}  {value} {unit}
+...
 
-Detected anomalies: {anomaly_count}
-Respond concisely. Maximum 150 words.
+Answer in 2-3 sentences:
+1. Is the system stable?
+2. Any anomaly or trend?
+3. Suggestions?
+Be concise.
 ```
 
 ---
@@ -260,21 +259,19 @@ for `DataFilter` and `AIQueryDispatcher`.
 
 ---
 
-## 6. AI Layer (Ollama + Qwen2.5-3B-Instruct)
+## 6. AI Layer (Ollama + Qwen2.5-3B)
 
 | Attribute | Value |
 |-----------|-------|
-| Model | Qwen2.5-3B-Instruct |
-| Quantization | Q4_K_M |
-| VRAM / RAM | ~1.9 GB |
+| Model | Qwen2.5-3B |
+| RAM | ~1.9 GB |
 | Accuracy retention | >95% vs full precision |
 | Inference endpoint | `http://localhost:11434/api/generate` |
 | Cloud dependency | None — fully local |
 
-**Why Qwen2.5-3B Q4_K_M?**
+**Why Qwen2.5-3B?**
 - 3B parameter class is lightweight enough to run comfortably on CPU with low RAM usage (~1.9 GB)
-- Q4_K_M quantization gives the best size/quality tradeoff in the 4-bit family
-- Qwen2.5 improves over Qwen2 in instruction following, structured output, and multilingual support
+- Qwen2.5 improves over Qwen2 in instruction following, structured output
 - Response latency ~5–15 s on CPU, well suited for periodic analysis
 
 ---
@@ -304,7 +301,7 @@ Error response (400):
 ```
 Method:   POST
 Endpoint: http://localhost:11434/api/generate
-Body:     { "model": "qwen2.5:3b-instruct-q4_K_M", "prompt": "...", "stream": false }
+Body:     { "model": "qwen2.5:3b", "prompt": "...", "stream": false }
 Response: { "response": "<analysis text>", "done": true }
 ```
 

@@ -1,6 +1,7 @@
 #include "DataIngestor.h"
 #include "DataFilter.h"
 #include "AIQueryDispatcher.h"
+#include "CloudSync.h"
 
 #include "httplib.h"
 #include "nlohmann/json.hpp"
@@ -74,8 +75,14 @@ struct DataIngestor::Impl
 DataIngestor::DataIngestor(
     StorageEngine &storage,
     DataFilter &filter,
-    AIQueryDispatcher &ai)
-    : storage_(storage), filter_(filter), ai_(ai), impl_(std::make_unique<Impl>())
+    AIQueryDispatcher &ai,
+    CloudSync &cloud,
+    double temp_min, double temp_max,
+    double hum_min,  double hum_max)
+    : storage_(storage), filter_(filter), ai_(ai), cloud_(cloud)
+    , temp_min_(temp_min), temp_max_(temp_max)
+    , hum_min_(hum_min),   hum_max_(hum_max)
+    , impl_(std::make_unique<Impl>())
 {
 }
 
@@ -172,7 +179,10 @@ void DataIngestor::handleIngest(const std::string &raw_json,
         // IQR异常检测（滑动窗口）
         bool is_anomaly = filter_.check(r);
         if (is_anomaly)
+        {
             has_anomaly = true;
+            storage_.insertAnomaly(r);
+        }
 
         // 写入数据库
         storage_.insertReading(r);
@@ -181,7 +191,10 @@ void DataIngestor::handleIngest(const std::string &raw_json,
     // 4.AI分析
     ai_.onNewData(readings);
 
-    // 5.返回响应
+    // 5.云同步（占位 — 华为云 IoTDA 对接待注册后填充）
+    cloud_.onNewData(readings);
+
+    // 6.返回响应
     response_json = R"({"status":"ok","anomaly":)" +
                     std::string(has_anomaly ? "true" : "false") +
                     "}";
@@ -315,14 +328,14 @@ bool DataIngestor::validate(const std::vector<SensorReading> &readings,
         // temp
         if (r.sensor_type == "temperature")
         {
-            if (r.value < -40.0 || r.value > 125.0)
+            if (r.value < temp_min_ || r.value > temp_max_)
             {
                 error_msg = "temperature is out of the range";
                 return false;
             }
         }
         else if(r.sensor_type=="humidity"){
-            if(r.value<0.01||r.value>100.0){
+            if(r.value < hum_min_ || r.value > hum_max_){
                 error_msg="humidity is out of the range";
                 return false;
             }

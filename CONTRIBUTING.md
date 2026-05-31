@@ -24,8 +24,8 @@ Thank you for contributing! This document explains how the project is structured
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Windows / Linux | — | Dev environment (this repo currently builds on Windows) |
-| GCC (MinGW-w64) / Clang | ≥ 12 | C++17 backend compiler |
+| macOS | — | Dev environment (this repo currently builds on macOS) |
+| Apple Clang | ≥ 15 | C++17 backend compiler |
 | CMake | ≥ 3.20 (tested with 4.3.1) | Backend build system |
 | SQLite | 3.x | Local database (file-based) |
 | Python | ≥ 3.10 | Simulation and test scripts |
@@ -46,11 +46,11 @@ pip install requests
 # Install Ollama
 curl -fsSL https://ollama.com/install.sh | sh
 
-# Pull the model (downloads ~4.5 GB)
-ollama pull qwen2.5:3b-instruct-q4_K_M
+# Pull the model (downloads ~1.9 GB)
+ollama pull qwen2.5:3b
 
 # Verify
-ollama run qwen2.5:3b-instruct-q4_K_M "Say hello in one sentence."
+ollama run qwen2.5:3b "Say hello in one sentence."
 ```
 
 ### Database Setup
@@ -81,7 +81,7 @@ edge-iot-monitor/
 │   └── schema.sql             # SQLite schema (3 tables)
 ├── scripts/
 │   ├── simulate_sensor.py     # Generates JSON readings (HTTP POST or --stdout)
-│   └── test_ollama.py         # Verifies Ollama/Qwen2 pipeline
+│   └── test_ollama.py         # Verifies Ollama/Qwen2.5 pipeline
 ├── firmware/
 │   └── src/
 │       └── main.cpp           # Firmware entry (currently minimal)
@@ -103,14 +103,12 @@ edge-iot-monitor/
 ### Building
 
 ```bash
-# Windows (MinGW):
-cmake -S . -B build-cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+# macOS (Apple Clang):
+cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
 cmake --build build-cmake -j 8
 
-# If you're using MSVC, pick a Visual Studio generator instead.
-
 # Build artifact:
-# - Windows: build-cmake/backend/edge_ingest.exe
+# - macOS: build-cmake/backend/edge_ingest
 ```
 
 ### Module Responsibilities

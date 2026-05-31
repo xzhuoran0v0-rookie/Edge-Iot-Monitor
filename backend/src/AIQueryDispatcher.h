@@ -19,7 +19,7 @@
  * 设计原则：
  * - 与 StorageEngine 解耦（仅通过接口访问数据）
  * - 支持多传感器类型（temperature / humidity / future扩展）
- * - 不依赖具体数据库实现（SQLite / MySQL 均可）
+ * - 不依赖具体数据库实现（当前使用 SQLite）
  */
 class AIQueryDispatcher
 {

@@ -64,6 +64,13 @@ public:
     bool insertReading(const SensorReading &reading);
 
     /**
+     * @brief 持久化一条 IQR 异常检测事件
+     * @param reading 被 DataFilter 判定为异常的 SensorReading
+     * @return 是否插入成功
+     */
+    bool insertAnomaly(const SensorReading &reading);
+
+    /**
      * @brief 查询最近的N条数据
      * @param device_id 设备id
      * @param limit 返回数量

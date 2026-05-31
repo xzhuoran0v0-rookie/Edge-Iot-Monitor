@@ -2,16 +2,17 @@
 
 #include <algorithm>
 #include <iostream>
+#include <ctime>
 
 /**
  * @brief 构造函数
  *
- * @param window_size 滑动窗口大小
+ * @param window_seconds 滑动窗口大小
  * @param iqr_multiplier IQR倍数
  *
  */
-DataFilter::DataFilter(int window_size, double iqr_multiplier)
-    : window_size_(window_size), iqr_multiplier_(iqr_multiplier)
+DataFilter::DataFilter(int window_seconds, double iqr_multiplier, int min_samples)
+    : window_seconds_(window_seconds), iqr_multiplier_(iqr_multiplier), min_samples_(min_samples)
 {
 }
 
@@ -20,48 +21,62 @@ DataFilter::DataFilter(int window_size, double iqr_multiplier)
 // ————————————————————————————————————————
 bool DataFilter::check(const SensorReading &reading)
 {
-    const auto key = makeKey(reading.device_id, reading.sensor_type);
+    // ---- 1.解析 server_timestamp 为 epoch 秒 ----
+    const std::string &ts = !reading.server_timestamp.empty() ? reading.server_timestamp : reading.timestamp;
 
-    // 若不存在则自动创建新窗口
+    int64_t now_sec = 0;
+    if (ts.size() >= 19)
+    // "2026-05-26T16:15:38Z" → 至少 19 字符
+    {
+        // 手动解析 ISO8601，避免依赖 <chrono> 的 from_chars,避免macOS不支持的情况
+        // 格式：YYYY-MM-DDTHH:MM:SSZ
+        struct tm t = {};
+        t.tm_year = std::stoi(ts.substr(0, 4)) - 1900;
+        t.tm_mon = std::stoi(ts.substr(5, 2)) - 1;
+        t.tm_mday = std::stoi(ts.substr(8, 2));
+        t.tm_hour = std::stoi(ts.substr(11, 2));
+        t.tm_min = std::stoi(ts.substr(14, 2));
+        t.tm_sec = std::stoi(ts.substr(17, 2));
+        now_sec = timegm(&t); // UTC → epoch 秒
+    }
+
+    // ---- 2. 找到窗口，淘汰过期数据 ----
+    const auto key = makeKey(reading.device_id, reading.sensor_type);
     auto &window = windows_[key];
 
-    bool is_anomaly = false;
-
-    /**
-     * 设计：
-     * - 窗口未满->不启动检测
-     * - 窗口已满->使用IQR检测
-     */
-    if (static_cast<int>(window.size()) >= window_size_)
+    const int64_t cutoff = now_sec - window_seconds_;
+    while (!window.empty() && window.front().unix_sec < cutoff)
     {
-        // Copy and sort
-        std::vector<double> sorted(window.begin(), window.end());
+        window.pop_front();
+    }
+
+    // ---- 3.窗口足够，运行IQR ----
+    bool is_anomaly = false;
+    if (static_cast<int>(window.size()) >= min_samples_)
+    {
+        std::vector<double> sorted;
+        sorted.reserve(window.size());
+        for (const auto &s : window)
+            sorted.push_back(s.value);
+
         std::sort(sorted.begin(), sorted.end());
 
         double lower, upper;
-
         computeBounds(sorted, lower, upper);
 
         if (reading.value < lower || reading.value > upper)
         {
             is_anomaly = true;
-
-            // 调试输出
-            std::cout << "[DataFilter] ANOMALY"
+            std::cout << "[DataFilter] ANOMALY "
                       << reading.device_id << "/" << reading.sensor_type
-                      << "value=" << reading.value
-                      << "bounds=[" << lower << "," << upper << "]"
+                      << " value=" << reading.value
+                      << " bounds=[" << lower << "," << upper << "]"
                       << std::endl;
         }
     }
-    // ── 更新滑动窗口（始终执行） ──
-    window.push_back(reading.value);
 
-    // 超出窗口大小则移除最旧数据
-    if (static_cast<int>(window.size()) > window_size_)
-    {
-        window.pop_front();
-    }
+    // ---- 4.存入新数据 ----
+    window.push_back({reading.value, now_sec});
     return is_anomaly;
 }
 
