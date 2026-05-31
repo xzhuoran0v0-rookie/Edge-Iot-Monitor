@@ -43,7 +43,8 @@ public:
         AIQueryDispatcher &ai,
         CloudSync &cloud,
         double temp_min = -40.0, double temp_max = 85.0,
-        double hum_min = 0.0, double hum_max = 100.0);
+        double hum_min = 0.0, double hum_max = 100.0,
+        std::vector<std::string> allowlist = {});
 
     ~DataIngestor();
 
@@ -118,6 +119,7 @@ private:
     //=========== 校验范围（来自 AppConfig）============//
     double temp_min_, temp_max_;
     double hum_min_,  hum_max_;
+    std::vector<std::string> allowlist_;
 
     std::unique_ptr<Impl> impl_;
 };

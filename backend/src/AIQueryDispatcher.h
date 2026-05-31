@@ -55,6 +55,14 @@ public:
      */
     void onNewData(const std::vector<SensorReading> &readings);
 
+    /**
+     * @brief 获取最近一次 AI 分析结果（用于回传给设备端）
+     *
+     * @param device_id 设备ID
+     * @return 最近一次分析文本；如果还没跑过 AI 则返回空字符串 ""
+     */
+    std::string getLastAnalysis(const std::string &device_id) const;
+
 private:
     /**
      * @brief 构建发送给 LLM 的 prompt
@@ -119,4 +127,7 @@ private:
      * value = 自上次分析后累计的数据条数
      */
     std::unordered_map<std::string, int> counters_;
+
+    /** 最近一次 AI 分析结果缓存（key = device_id） */
+    std::unordered_map<std::string, std::string> last_analysis_;
 };

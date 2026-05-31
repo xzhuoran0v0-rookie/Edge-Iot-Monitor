@@ -80,6 +80,14 @@ AppConfig loadConfig(const std::string &path)
             }
         }
 
+        // ---- device allowlist ----
+        if (root["devices"] && root["devices"]["allowlist"])
+        {
+            auto list = root["devices"]["allowlist"];
+            for (const auto &item : list)
+                cfg.device_allowlist.push_back(item.as<std::string>());
+        }
+
         // ---- cloud ----
         if (root["cloud"])
         {

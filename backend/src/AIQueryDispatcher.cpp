@@ -208,14 +208,23 @@ void AIQueryDispatcher::saveResult(
     const std::string &prompt,
     const std::string &result)
 {
-    /**
-     * 当前实现：占位（打印）
-     * 推荐：调用 StorageEngine::insertAnalysisLog()
-     */
-
     std::cout << "[AIQuery] === RESULT ===\n"
               << result << "\n"
               << "[AIQuery] ==============\n";
 
     storage_.insertAnalysisLog(device_id, prompt, result);
+
+    // 缓存最新结果，供 DataIngestor 回传给设备端
+    last_analysis_[device_id] = result;
+}
+
+// ─────────────────────────────────────────────
+// 获取最近一次分析（回环用）
+// ─────────────────────────────────────────────
+std::string AIQueryDispatcher::getLastAnalysis(const std::string &device_id) const
+{
+    auto it = last_analysis_.find(device_id);
+    if (it != last_analysis_.end())
+        return it->second;
+    return "";
 }

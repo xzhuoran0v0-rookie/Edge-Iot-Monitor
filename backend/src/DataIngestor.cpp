@@ -78,10 +78,12 @@ DataIngestor::DataIngestor(
     AIQueryDispatcher &ai,
     CloudSync &cloud,
     double temp_min, double temp_max,
-    double hum_min,  double hum_max)
+    double hum_min,  double hum_max,
+    std::vector<std::string> allowlist)
     : storage_(storage), filter_(filter), ai_(ai), cloud_(cloud)
     , temp_min_(temp_min), temp_max_(temp_max)
     , hum_min_(hum_min),   hum_max_(hum_max)
+    , allowlist_(std::move(allowlist))
     , impl_(std::make_unique<Impl>())
 {
 }
@@ -194,10 +196,15 @@ void DataIngestor::handleIngest(const std::string &raw_json,
     // 5.云同步（占位 — 华为云 IoTDA 对接待注册后填充）
     cloud_.onNewData(readings);
 
-    // 6.返回响应
-    response_json = R"({"status":"ok","anomaly":)" +
-                    std::string(has_anomaly ? "true" : "false") +
-                    "}";
+    // 6.返回响应（含 AI 分析，供设备端 OLED 显示）
+    std::string analysis = ai_.getLastAnalysis(readings[0].device_id);
+    json resp = {
+        {"status", "ok"},
+        {"anomaly", has_anomaly}
+    };
+    if (!analysis.empty())
+        resp["analysis"] = analysis;
+    response_json = resp.dump();
 
     // 日志输出(调试)
     std::cout << "[Ingest] device=" << readings[0].device_id
@@ -319,6 +326,21 @@ bool DataIngestor::validate(const std::vector<SensorReading> &readings,
 {
     for (const auto &r : readings)
     {
+        // 1. allowlist check（空列表=允许全部）
+        if (!allowlist_.empty())
+        {
+            bool found = false;
+            for (const auto &allowed : allowlist_)
+            {
+                if (r.device_id == allowed) { found = true; break; }
+            }
+            if (!found)
+            {
+                error_msg = "device not authorized";
+                return false;
+            }
+        }
+
         if (r.device_id.empty())
         {
             error_msg = "device id is missing";

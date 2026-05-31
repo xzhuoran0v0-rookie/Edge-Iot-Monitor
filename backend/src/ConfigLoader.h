@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 /**
  * @brief 应用全局配置（从 config.yaml 加载）
@@ -37,6 +38,9 @@ struct AppConfig
     double temp_max = 85.0;
     double hum_min = 0.0;
     double hum_max = 100.0;
+
+    // ---- device allowlist ----
+    std::vector<std::string> device_allowlist;
 
     // ---- cloud sync ----
     bool cloud_enabled = false;

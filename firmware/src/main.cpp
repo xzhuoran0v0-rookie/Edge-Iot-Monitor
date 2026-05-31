@@ -4,6 +4,7 @@
 #include "http_client.h"
 #include "sht30.h"
 #include "oled.h"
+#include "median_filter.h"
 
 void setup()
 {
@@ -49,6 +50,9 @@ void loop()
         delay(5000);
         return;
     }
+
+    temp=medianFilterTemp(temp);
+    humi=medianFilterHumi(humi);
 
     Serial.print("[SENSOR] Temp=");
     Serial.print(temp, 1);

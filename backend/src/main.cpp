@@ -80,7 +80,8 @@ int main()
     std::cout << "[INIT] DataIngestor...\n";
     DataIngestor ingestor(storage, filter, ai, cloud,
                            cfg.temp_min, cfg.temp_max,
-                           cfg.hum_min,  cfg.hum_max);
+                           cfg.hum_min,  cfg.hum_max,
+                           cfg.device_allowlist);
 
     std::cout << "[OK] HTTP Server starting at http://" << cfg.server_host
               << ":" << cfg.server_port << "\n";
