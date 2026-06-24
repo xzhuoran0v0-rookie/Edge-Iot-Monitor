@@ -1,159 +1,215 @@
-# Edge-Intelligence IoT Monitoring & Analysis System
+# Edge IoT Monitor
 
-A competition IoT project featuring local AI-powered sensor analysis, anomaly detection, and real-time display feedback — with zero cloud dependency.
+一个边缘侧物联网监控原型：ESP32-S3 采集温湿度数据，通过 HTTP 上报到本地 C++ 后端，后端写入 SQLite、做 IQR 异常检测，并可调用本机 Ollama 生成传感器窗口分析。
 
----
+当前仓库重点是“本地可跑通”的端到端链路：模拟传感器或 ESP32-S3 → C++ HTTP 接入 → SQLite → 异常检测 → 可选本地 LLM 分析。云端同步代码已预留接口，实际发送逻辑仍是 TODO。
 
-## Hardware
+## 当前状态
 
-| Component | Model | Notes |
+| 模块 | 状态 | 说明 |
 |---|---|---|
-| MCU | ESP32-S3-N16R8 | 16MB Flash, 8MB PSRAM, built-in WiFi |
-| Display | 0.96" OLED 128×64 | SSD1315 driver, I²C |
-| Sensor | SHT30 | Temperature & humidity, I²C |
-| Communication | ESP32-S3 built-in WiFi | HTTP POST to backend |
-| Power | USB | — |
-| Host Machine | macOS, Apple M5 | Runs Ollama + C++ backend |
+| 固件 | 可构建原型 | PlatformIO + Arduino，支持 WiFi、SHT30、OLED、HTTP 上报 |
+| 后端 HTTP 服务 | 可构建运行 | `edge_server`，接收 `POST /api/ingest` |
+| 本地导入工具 | 可构建运行 | `edge_ingest`，从标准输入读取 JSON 行并写入 SQLite |
+| 数据库存储 | 可用 | SQLite schema 位于 `sql/schema.sql` |
+| 异常检测 | 可用 | 按设备和传感器类型维护滑动窗口，使用 IQR 判定异常 |
+| AI 分析 | 可用但依赖 Ollama | 触发后调用 `qwen2.5:3b`，结果写入 `analysis_log` |
+| 云同步 | 占位 | `CloudSync` 已接入流水线，华为云发送逻辑未实现 |
 
----
+## 项目结构
 
-## Software Stack
-
-| Layer | Technology |
-|---|---|
-| Firmware | ESP-IDF v5.x or Arduino Core for ESP32 |
-| Backend | C++17, CMake, running on macOS |
-| Database | SQLite |
-| AI | Ollama + Qwen2.5-3B |
-| Communication | ESP32 WiFi → HTTP POST to macOS backend |
-
----
-
-## Repository Structure
-
-```
+```text
 edge-iot-monitor/
-├── README.md
-├── LICENSE
-├── .gitignore
-├── CONTRIBUTING.md
-├── docs/
-│   └── architecture.md
+├── backend/                 # C++17 后端与本地导入工具
+│   ├── CMakeLists.txt
+│   └── src/
+│       ├── main.cpp         # edge_server 入口
+│       ├── ingest_stdin.cpp # edge_ingest 入口
+│       ├── DataIngestor.*   # HTTP 接入、JSON 解析、数据校验
+│       ├── DataFilter.*     # IQR 异常检测
+│       ├── StorageEngine.*  # SQLite 初始化、插入、查询
+│       ├── AIQueryDispatcher.*
+│       ├── CloudSync.*      # 云同步占位
+│       └── ConfigLoader.*   # config/config.yaml 加载
 ├── config/
-│   └── config.example.yaml
-├── sql/
-│   └── schema.sql              ← 3 tables: sensor_readings, anomaly_events, analysis_log
+│   └── config.example.yaml  # 后端示例配置
+├── docs/
+│   └── architecture.md      # 架构说明
+├── firmware/                # ESP32-S3 PlatformIO 工程
+│   ├── platformio.ini
+│   └── src/
 ├── scripts/
-│   ├── simulate_sensor.py      ← simulates sensor POST without hardware
-│   └── test_ollama.py          ← verifies Ollama/Qwen2.5 is working
-├── firmware/
-│   └── src/                    ← ESP32-S3 code (Phase 2)
-└── backend/
-    └── src/                    ← C++ modules
-        ├── DataIngestor         ← HTTP server, receives & validates JSON
-        ├── DataFilter           ← sliding IQR anomaly detection
-        ├── StorageEngine        ← SQLite connection, batch insert, query helpers
-        └── AIQueryDispatcher    ← builds prompts, calls Ollama, parses response
+│   ├── simulate_sensor.py   # 模拟传感器，可 HTTP POST 或输出 JSON 行
+│   └── test_ollama.py       # Ollama 连通性和推理测试
+└── sql/
+    └── schema.sql           # SQLite 表结构
 ```
 
----
+## 数据流
 
-## Data Flow
-
+```text
+ESP32-S3 或 scripts/simulate_sensor.py
+  -> POST /api/ingest
+  -> DataIngestor
+      -> JSON 解析与范围校验
+      -> 拆分为 temperature / humidity 传感器行
+  -> DataFilter
+      -> 每个 device_id + sensor_type 独立滑动窗口
+      -> IQR 异常检测
+  -> StorageEngine
+      -> sensor_readings / anomaly_events / analysis_log / sync_status
+  -> AIQueryDispatcher
+      -> 每 N 条记录触发 Ollama 分析
+  -> CloudSync
+      -> 当前仅占位，未真正发送云端请求
 ```
-ESP32-S3 (SHT30 sensor)
-  → MedianFilter (on-device, template C++)
-  → HTTP POST /api/ingest (JSON payload)
-  → macOS C++ backend
-      → DataFilter (IQR anomaly detection, 60s window, 1.5× multiplier)
-      → SQLite (sensor_readings / anomaly_events tables)
-      → AIQueryDispatcher (every N records)
-          → Ollama localhost:11434
-          → Qwen2.5-3B inference (Apple M5)
-          → analysis_log table
-  → (optional) result pushed back to ESP32 → OLED display
+
+当前 HTTP 载荷支持 `temperature` 和 `humidity`。模拟器也会生成 `pressure`，但 HTTP 服务目前不会存储 pressure；本地 `edge_ingest` 工具支持把 pressure 写入数据库。
+
+示例载荷：
+
+```json
+{
+  "device_id": "esp32s3-001",
+  "timestamp": 1700000000,
+  "temperature": 24.3,
+  "humidity": 58.7
+}
 ```
 
----
+## 依赖
 
-## C++ Backend Modules
+后端：
 
-- **DataIngestor** — HTTP server, receives JSON from ESP32, validates input
-- **DataFilter** — sliding IQR anomaly detection (60s window, 1.5× multiplier)
-- **StorageEngine** — SQLite connection pool, batch insert, query helpers
-- **AIQueryDispatcher** — builds prompts from sensor windows, calls Ollama REST API, parses response
+- CMake 3.20+
+- C++17 编译器
+- SQLite 源码已随仓库放在 `backend/src/sqlite3.c`
+- 构建 `edge_server` 时需要 `yaml-cpp`
+- 使用 AI 分析时需要本机运行 Ollama，并拉取 `qwen2.5:3b`
 
----
+固件：
 
-## Key Design Decisions
+- PlatformIO
+- ESP32-S3 DevKitC-1
+- Arduino framework
+- SHT30 传感器
+- OLED 显示模块
 
-- All AI inference is **local** via Ollama — zero cloud dependency
-- ESP32-S3 chosen over STM32 for built-in WiFi
-- Qwen2.5-3B (~1.9GB, >95% accuracy retention vs full precision)
-- SQLite for lightweight, zero-config local storage
-- SSD1315 driver used for OLED (note: not SSD1306 compatible)
+## 快速开始：后端 HTTP 服务
 
----
+1. 准备配置文件：
 
-## Development Phases
+```bash
+cp config/config.example.yaml config/config.yaml
+```
 
-### Phase 1 — Backend + AI Pipeline (current)
-- Set up SQLite schema
-- Implement C++ backend (DataIngestor, StorageEngine, DataFilter, AIQueryDispatcher)
-- Verify with `scripts/simulate_sensor.py` (no hardware needed)
-- Verify AI pipeline with `scripts/test_ollama.py`
+注意 `config.example.yaml` 默认启用了设备 allowlist。模拟器默认设备是 `esp32-s3-sim-001`，可以选择：
 
-### Phase 2 — Firmware
-- Write ESP32-S3 firmware
-- Connect SHT30 sensor
-- Replace simulator with real sensor data
+- 把 `esp32-s3-sim-001` 加到 `config/config.yaml` 的 `devices.allowlist`
+- 或运行模拟器时指定已允许的设备，例如 `--device esp32s3-001`
+- 或临时把 allowlist 改为空列表 `[]`
 
-### Phase 3 — Close the Loop
-- Push LLM analysis results back to ESP32
-- Display results on OLED
+2. 如果要使用 AI 分析，启动 Ollama 并拉取模型：
 
----
-
-## Requirements
-
-### Host Machine (macOS / Apple M5)
-- [Ollama](https://ollama.com) with `qwen2.5:3b` model
-- CMake 4.x
-- Apple Clang (Xcode Command Line Tools)
-- VS Code with C/C++, CMake, CMake Tools extensions
-
-### ESP32-S3 (Phase 2)
-- ESP-IDF v5.x or Arduino Core for ESP32
-- SHT30 library
-- SSD1315-compatible OLED library
-
----
-
-## Getting Started
-
-### 1. Pull Qwen2.5 model
 ```bash
 ollama pull qwen2.5:3b
 ```
 
-### 2. Build the backend
+3. 构建 HTTP 服务：
+
 ```bash
-mkdir build && cd build
-cmake ..
-cmake --build .
+cmake -S . -B build-cmake -DEDGE_BUILD_SERVER=ON
+cmake --build build-cmake
 ```
 
-### 3. Run the simulator
+4. 运行后端：
+
 ```bash
-python scripts/simulate_sensor.py
+./build-cmake/backend/edge_server
 ```
 
-### 4. Test AI pipeline
+服务启动后会监听：
+
+- `GET /health`
+- `POST /api/ingest`
+
+5. 用模拟器发送数据：
+
 ```bash
-python scripts/test_ollama.py
+python3 scripts/simulate_sensor.py --device esp32s3-001 --count 10
 ```
 
----
+## 快速开始：无需 HTTP 的本地写库测试
+
+默认构建会生成 `edge_ingest`，它适合快速验证 SQLite 写入：
+
+```bash
+cmake -S . -B build-cmake
+cmake --build build-cmake
+python3 scripts/simulate_sensor.py --stdout --count 10 | ./build-cmake/backend/edge_ingest --db sensor.db
+```
+
+这条链路不会调用 HTTP、异常检测或 Ollama，只验证 JSON 行解析和 SQLite 写入。
+
+## 测试 Ollama
+
+```bash
+python3 scripts/test_ollama.py --model qwen2.5:3b
+```
+
+如果只是检查 Ollama 是否在线：
+
+```bash
+python3 scripts/test_ollama.py --check-only
+```
+
+## 固件配置
+
+固件位于 `firmware/`，使用 PlatformIO：
+
+```bash
+cd firmware
+pio run
+```
+
+首次烧录前需要基于示例创建本地配置：
+
+```bash
+cp src/config.example.h src/config.h
+```
+
+然后填写：
+
+- `WIFI_SSID`
+- `WIFI_PASS`
+- `SERVER_URL`，例如 `http://192.168.x.x:8080/api/ingest`
+
+`src/config.h` 属于本地敏感配置，不应提交。
+
+## 数据库
+
+数据库表结构由 `sql/schema.sql` 维护，`StorageEngine::init()` 会在启动时执行该 schema。
+
+主要表：
+
+- `sensor_readings`：每条传感器指标一行
+- `anomaly_events`：异常检测结果
+- `analysis_log`：LLM prompt 和 response
+- `sync_status`：云同步进度占位
+
+## 配置说明
+
+后端启动时读取 `config/config.yaml`。如果文件不存在，会使用代码里的默认值。
+
+常用配置：
+
+- `server.port`：HTTP 服务端口，默认 `8080`
+- `sqlite.db_path`：SQLite 文件路径，默认 `sensor.db`
+- `ollama.host` / `ollama.port` / `ollama.model`：本地模型服务
+- `filter.window_seconds` / `filter.iqr_multiplier` / `filter.min_window_samples`：异常检测参数
+- `ai.trigger_every_n_records` / `ai.max_window_records`：AI 分析触发频率和窗口大小
+- `devices.allowlist`：允许接入的设备 ID
+- `cloud.*`：华为云 IoTDA 预留配置，当前发送逻辑未完成
 
 ## License
 
