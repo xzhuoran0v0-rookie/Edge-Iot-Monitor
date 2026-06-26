@@ -44,7 +44,9 @@ public:
         CloudSync &cloud,
         double temp_min = -40.0, double temp_max = 85.0,
         double hum_min = 0.0, double hum_max = 100.0,
-        std::vector<std::string> allowlist = {});
+        double pressure_min = 800.0, double pressure_max = 1200.0,
+        std::vector<std::string> allowlist = {},
+        std::string command_api_key = "");
 
     ~DataIngestor();
 
@@ -91,6 +93,7 @@ private:
                       int &status_code);
 
     void handleCreateCommand(const std::string &raw_json,
+                             const std::string &api_key,
                              std::string &respond_json,
                              int &status_code);
 
@@ -127,6 +130,7 @@ private:
                   std::string &error_msg);
 
     bool isDeviceAllowed(const std::string &device_id) const;
+    bool isCommandApiAuthorized(const std::string &api_key) const;
     static bool isAllowedCommand(const std::string &command);
 
     //=========== 依赖模块 ==============//
@@ -138,7 +142,9 @@ private:
     //=========== 校验范围（来自 AppConfig）============//
     double temp_min_, temp_max_;
     double hum_min_,  hum_max_;
+    double pressure_min_, pressure_max_;
     std::vector<std::string> allowlist_;
+    std::string command_api_key_;
 
     std::unique_ptr<Impl> impl_;
 };

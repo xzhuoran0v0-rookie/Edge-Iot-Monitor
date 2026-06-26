@@ -174,9 +174,10 @@ std::string AIQueryDispatcher::buildPrompt(
      * - 统一格式 → 更易扩展
      * - 让模型自己理解 sensor_type
      */
-    ss << "You are an IoT sensor data analyst.\n";
-    ss << "Analyze the recent readings from device ["
-       << device_id << "] and provide insights.\n\n";
+    ss << "You are the backup reasoning module for an IoT environment monitoring system.\n";
+    ss << "The primary system uses cloud LLM reasoning through Huawei Cloud IoTDA data forwarding.\n";
+    ss << "This local Ollama analysis is only a fallback for offline demos or cloud API failures.\n";
+    ss << "Analyze recent readings from device [" << device_id << "].\n\n";
 
     ss << "## Sensor Readings\n";
 
@@ -187,11 +188,20 @@ std::string AIQueryDispatcher::buildPrompt(
            << r.value << " " << r.unit << "\n";
     }
 
-    ss << "\nAnswer in 2-3 sentences:\n"
-       << "1. Is the system stable?\n"
-       << "2. Any anomaly or trend?\n"
-       << "3. Suggestions?\n"
-       << "Be concise.";
+    ss << "\nReturn only JSON with this shape:\n"
+       << "{\n"
+       << "  \"risk_level\": \"normal | low | medium | high | critical\",\n"
+       << "  \"risk_score\": 0,\n"
+       << "  \"abnormal_reason\": \"\",\n"
+       << "  \"trend_analysis\": \"\",\n"
+       << "  \"suggestions\": [],\n"
+       << "  \"alarm_required\": false,\n"
+       << "  \"buzzer_value\": \"0 | 1\",\n"
+       << "  \"buzzer_pattern\": \"none | slow_beep | fast_beep | continuous\"\n"
+       << "}\n"
+       << "Use high risk when temperature is above 35 C or humidity is above 80 %RH.\n"
+       << "Use critical risk when temperature is above 40 C or humidity is above 90 %RH.\n"
+       << "Be concise and do not include Markdown.";
 
     return ss.str();
 }

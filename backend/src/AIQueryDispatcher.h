@@ -36,7 +36,7 @@ struct DeepSeekConfig
  * 功能：
  * - 接收来自 DataIngestor 的新数据（统一为 vector<SensorReading>）
  * - 按 device_id 统计数据条数
- * - 达到 trigger_count 后触发一次 AI 分析
+ * - 达到 trigger_count 后触发一次本地备用 AI 分析
  * - 从 StorageEngine 查询历史数据
  * - 构建 prompt → 调用 LLM → 存入 analysis_log
  *

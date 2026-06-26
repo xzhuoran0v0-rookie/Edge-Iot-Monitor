@@ -50,8 +50,14 @@ struct AppConfig
     double temp_max = 85.0;
     double hum_min = 0.0;
     double hum_max = 100.0;
+    double pressure_min = 800.0;
+    double pressure_max = 1200.0;
+
     // ---- device allowlist ----
     std::vector<std::string> device_allowlist;
+
+    // ---- local command API security ----
+    std::string command_api_key;
 
     // ---- cloud sync ----
     bool cloud_enabled = false;

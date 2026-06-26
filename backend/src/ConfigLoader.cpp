@@ -106,6 +106,11 @@ AppConfig loadConfig(const std::string &path)
                 if (v["humidity"]["min"]) cfg.hum_min = v["humidity"]["min"].as<double>();
                 if (v["humidity"]["max"]) cfg.hum_max = v["humidity"]["max"].as<double>();
             }
+            if (v["pressure"])
+            {
+                if (v["pressure"]["min"]) cfg.pressure_min = v["pressure"]["min"].as<double>();
+                if (v["pressure"]["max"]) cfg.pressure_max = v["pressure"]["max"].as<double>();
+            }
         }
 
         // ---- device allowlist ----
@@ -114,6 +119,12 @@ AppConfig loadConfig(const std::string &path)
             auto list = root["devices"]["allowlist"];
             for (const auto &item : list)
                 cfg.device_allowlist.push_back(item.as<std::string>());
+        }
+
+        // ---- local command API security ----
+        if (root["security"] && root["security"]["command_api_key"])
+        {
+            cfg.command_api_key = root["security"]["command_api_key"].as<std::string>();
         }
 
         // ---- cloud ----

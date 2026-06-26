@@ -7,6 +7,7 @@ allowing full backend + AI pipeline testing WITHOUT any physical hardware.
 
 Usage:
     python3 scripts/simulate_sensor.py [--interval 2] [--device esp32-s3-001]
+    python3 scripts/simulate_sensor.py --stdout --format iotda
 """
 
 import argparse
@@ -60,6 +61,20 @@ def generate_reading(t: float, inject_anomaly: bool = False) -> dict:
     }
 
 
+def to_iotda_property_report(payload: dict, service_id: str = "Environment") -> dict:
+    return {
+        "services": [
+            {
+                "service_id": service_id,
+                "properties": {
+                    "temperature": payload["temperature"],
+                    "humidity": payload["humidity"],
+                },
+            }
+        ]
+    }
+
+
 def post_reading(payload: dict, url: str, timeout_sec: float) -> bool:
     data = json.dumps(payload).encode("utf-8")
     req  = urllib.request.Request(
@@ -87,9 +102,16 @@ def main():
     parser.add_argument("--timeout",  type=float, default=TIMEOUT_SEC, help="HTTP timeout seconds")
     parser.add_argument("--count",    type=int,   default=0, help="0 = run forever")
     parser.add_argument(
+        "--format",
+        choices=["local-http", "iotda"],
+        default="local-http",
+        help="Payload format. local-http matches the current backup backend; iotda prints Huawei Cloud IoTDA services payloads.",
+    )
+    parser.add_argument("--service-id", type=str, default="Environment", help="IoTDA product model service_id")
+    parser.add_argument(
         "--stdout",
         action="store_true",
-        help="Print one JSON payload per line (no HTTP POST); useful for piping into C++ ingest tools.",
+        help="Print one JSON payload per line (no HTTP POST); useful for piping into C++ ingest tools or checking IoTDA payloads.",
     )
     args = parser.parse_args()
 
@@ -101,6 +123,7 @@ def main():
     print(f"  Device  : {args.device}", file=out)
     print(f"  Interval: {args.interval}s", file=out)
     print(f"  Timeout : {args.timeout}s", file=out)
+    print(f"  Format  : {args.format}", file=out)
     print("  Anomaly injection: ~every 30 readings", file=out)
     print("-" * 48, file=out)
 
@@ -112,10 +135,19 @@ def main():
         inject = (counter % 30 == 0)  # inject anomaly every 30 readings
         payload = generate_reading(time.time() - t0, inject_anomaly=inject)
         payload["device_id"] = args.device
+        output_payload = (
+            to_iotda_property_report(payload, args.service_id)
+            if args.format == "iotda"
+            else payload
+        )
 
         if args.stdout:
-            print(json.dumps(payload, ensure_ascii=False))
+            print(json.dumps(output_payload, ensure_ascii=False))
             ok = True  # JSON-only mode, no HTTP
+        elif args.format == "iotda":
+            print("  [INFO] IoTDA format is stdout-only until real MQTT credentials are configured.", file=out)
+            print(json.dumps(output_payload, ensure_ascii=False), file=out)
+            ok = True
         else:
             ok = post_reading(payload, args.url, args.timeout)
 
