@@ -11,8 +11,14 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <algorithm>
 
 using json = nlohmann::json;
+
+static std::string makeError(const std::string &message)
+{
+    return json({{"status", "error"}, {"msg", message}}).dump();
+}
 
 /**
  * @brief 获取当前UTC时间
@@ -79,11 +85,15 @@ DataIngestor::DataIngestor(
     CloudSync &cloud,
     double temp_min, double temp_max,
     double hum_min,  double hum_max,
-    std::vector<std::string> allowlist)
+    double pressure_min, double pressure_max,
+    std::vector<std::string> allowlist,
+    std::string command_api_key)
     : storage_(storage), filter_(filter), ai_(ai), cloud_(cloud)
     , temp_min_(temp_min), temp_max_(temp_max)
     , hum_min_(hum_min),   hum_max_(hum_max)
+    , pressure_min_(pressure_min), pressure_max_(pressure_max)
     , allowlist_(std::move(allowlist))
+    , command_api_key_(std::move(command_api_key))
     , impl_(std::make_unique<Impl>())
 {
 }
@@ -108,9 +118,22 @@ DataIngestor::~DataIngestor() = default;
  * - 使用 lambda 捕获 this,调用类内部逻辑
  * - HTTP层与业务逻辑(handleIngest)解耦
  */
-void DataIngestor::start(int port)
+bool DataIngestor::start(const std::string &host,
+                         int port,
+                         int max_connections,
+                         int request_timeout_ms)
 {
     auto &svr = impl_->server;
+    const int timeout_sec = std::max(1, request_timeout_ms / 1000);
+
+    svr.set_read_timeout(timeout_sec);
+    svr.set_write_timeout(timeout_sec);
+    if (max_connections > 0)
+    {
+        svr.new_task_queue = [max_connections] {
+            return new httplib::ThreadPool(static_cast<size_t>(max_connections));
+        };
+    }
 
     // 健康检查接口(用于测试服务是否存活)
     svr.Get("/health", [](const httplib::Request &, httplib::Response &res)
@@ -120,14 +143,53 @@ void DataIngestor::start(int port)
              [this](const httplib::Request &req, httplib::Response &res)
              {
                  std::string response;
+                 int status = 200;
                  // 将HTTP body交给业务流水线处理
-                 handleIngest(req.body, response);
+                 handleIngest(req.body, response, status);
+                 res.status = status;
                  res.set_content(response, "application/json");
              });
-    std::cout << "[DataIngestor] Listening on 0.0.0.0:" << port << std::endl;
+
+    svr.Post("/api/commands",
+             [this](const httplib::Request &req, httplib::Response &res)
+             {
+                 std::string response;
+                 int status = 202;
+                 handleCreateCommand(req.body, req.get_header_value("X-Api-Key"), response, status);
+                 res.status = status;
+                 res.set_content(response, "application/json");
+             });
+
+    svr.Get("/api/commands/next",
+            [this](const httplib::Request &req, httplib::Response &res)
+            {
+                std::string response;
+                int status = 200;
+                handleNextCommand(req.get_param_value("device_id"), response, status);
+                res.status = status;
+                res.set_content(response, "application/json");
+            });
+
+    svr.Post("/api/commands/ack",
+             [this](const httplib::Request &req, httplib::Response &res)
+             {
+                 std::string response;
+                 int status = 200;
+                 handleCommandAck(req.body, response, status);
+                 res.status = status;
+                 res.set_content(response, "application/json");
+             });
+    std::cout << "[DataIngestor] Listening on " << host << ":" << port
+              << " (max_connections=" << max_connections
+              << ", timeout_ms=" << request_timeout_ms << ")" << std::endl;
 
     // 阻塞运行(进入事件循环)
-    svr.listen("0.0.0.0", port);
+    const bool ok = svr.listen(host, port);
+    if (!ok)
+    {
+        std::cerr << "[DataIngestor] Failed to listen on " << host << ":" << port << std::endl;
+    }
+    return ok;
 }
 
 /**
@@ -153,32 +215,25 @@ void DataIngestor::stop()
  * - 失败即返回(fail-fast)
  */
 void DataIngestor::handleIngest(const std::string &raw_json,
-                                std::string &response_json)
+                                std::string &response_json,
+                                int &status_code)
 {
     std::vector<SensorReading> readings;
     std::string err;
 
     // 1.JSON 解析
-    // 错误信息统一用 nlohmann::json 构造，保证转义后仍是合法 JSON
     if (!parseJson(raw_json, readings, err))
     {
-        response_json = json{{"status", "error"}, {"msg", err}}.dump();
-        return;
-    }
-
-    // 载荷合法但不含任何已知传感器字段时 readings 为空，
-    // 后续 readings[0] 会越界，且 validate 的 allowlist 检查会被跳过
-    if (readings.empty())
-    {
-        response_json = json{{"status", "error"},
-                             {"msg", "no sensor data fields (temperature/humidity required)"}}.dump();
+        status_code = 400;
+        response_json = makeError(err);
         return;
     }
 
     // 2.数据校验
     if (!validate(readings, err))
     {
-        response_json = json{{"status", "error"}, {"msg", err}}.dump();
+        status_code = err == "device not authorized" ? 401 : 400;
+        response_json = makeError(err);
         return;
     }
 
@@ -197,7 +252,12 @@ void DataIngestor::handleIngest(const std::string &raw_json,
         }
 
         // 写入数据库
-        storage_.insertReading(r);
+        if (!storage_.insertReading(r))
+        {
+            status_code = 500;
+            response_json = makeError("failed to store reading");
+            return;
+        }
     }
 
     // 4.AI分析
@@ -218,9 +278,155 @@ void DataIngestor::handleIngest(const std::string &raw_json,
 
     // 日志输出(调试)
     std::cout << "[Ingest] device=" << readings[0].device_id
-              << "count=" << readings.size()
-              << (has_anomaly ? "[ANOMALY]" : "")
+              << " count=" << readings.size()
+              << (has_anomaly ? " [ANOMALY]" : "")
               << std::endl;
+}
+
+void DataIngestor::handleCreateCommand(const std::string &raw_json,
+                                       const std::string &api_key,
+                                       std::string &response_json,
+                                       int &status_code)
+{
+    try
+    {
+        if (!isCommandApiAuthorized(api_key))
+        {
+            status_code = 401;
+            response_json = makeError("command API key required");
+            return;
+        }
+
+        auto j = json::parse(raw_json);
+        const std::string device_id = j.at("device_id").get<std::string>();
+        const std::string command = j.at("command").get<std::string>();
+        int duration_ms = j.value("duration_ms", 0);
+
+        if (!isDeviceAllowed(device_id))
+        {
+            status_code = 401;
+            response_json = makeError("device not authorized");
+            return;
+        }
+        if (!isAllowedCommand(command))
+        {
+            status_code = 400;
+            response_json = makeError("command not allowed");
+            return;
+        }
+        if (duration_ms < 0 || duration_ms > 30000)
+        {
+            status_code = 400;
+            response_json = makeError("duration_ms must be between 0 and 30000");
+            return;
+        }
+        if (command == "buzzer_on" && duration_ms == 0)
+            duration_ms = 1000;
+        if (command == "buzzer_off")
+            duration_ms = 0;
+
+        int command_id = 0;
+        if (!storage_.enqueueDeviceCommand(device_id, command, duration_ms, &command_id))
+        {
+            status_code = 500;
+            response_json = makeError("failed to queue command");
+            return;
+        }
+
+        status_code = 202;
+        response_json = json({
+            {"status", "queued"},
+            {"command_id", command_id},
+            {"device_id", device_id},
+            {"command", command},
+            {"duration_ms", duration_ms}
+        }).dump();
+    }
+    catch (const std::exception &e)
+    {
+        status_code = 400;
+        response_json = makeError(e.what());
+    }
+}
+
+void DataIngestor::handleNextCommand(const std::string &device_id,
+                                     std::string &response_json,
+                                     int &status_code)
+{
+    if (device_id.empty())
+    {
+        status_code = 400;
+        response_json = makeError("device_id is required");
+        return;
+    }
+    if (!isDeviceAllowed(device_id))
+    {
+        status_code = 401;
+        response_json = makeError("device not authorized");
+        return;
+    }
+
+    DeviceCommand command;
+    if (!storage_.getPendingDeviceCommand(device_id, command))
+    {
+        status_code = 200;
+        response_json = json({{"status", "idle"}}).dump();
+        return;
+    }
+
+    status_code = 200;
+    response_json = json({
+        {"status", "ok"},
+        {"command_id", command.id},
+        {"command", command.command},
+        {"duration_ms", command.duration_ms}
+    }).dump();
+}
+
+void DataIngestor::handleCommandAck(const std::string &raw_json,
+                                    std::string &response_json,
+                                    int &status_code)
+{
+    try
+    {
+        auto j = json::parse(raw_json);
+        const std::string device_id = j.at("device_id").get<std::string>();
+        const int command_id = j.at("command_id").get<int>();
+        const std::string result = j.value("result", "done");
+
+        if (!isDeviceAllowed(device_id))
+        {
+            status_code = 401;
+            response_json = makeError("device not authorized");
+            return;
+        }
+        if (command_id <= 0)
+        {
+            status_code = 400;
+            response_json = makeError("command_id must be positive");
+            return;
+        }
+        if (result != "done" && result != "failed")
+        {
+            status_code = 400;
+            response_json = makeError("result must be done or failed");
+            return;
+        }
+        if (!storage_.ackDeviceCommand(device_id, command_id, result))
+        {
+            status_code = 404;
+            response_json = makeError("pending command not found");
+            return;
+        }
+
+        status_code = 200;
+        response_json = json({{"status", "acked"}, {"command_id", command_id}}).dump();
+    }
+    catch (const std::exception &e)
+    {
+        status_code = 400;
+        response_json = makeError(e.what());
+    }
 }
 
 /**
@@ -310,6 +516,26 @@ bool DataIngestor::parseJson(const std::string &raw,
 
             out.push_back(h);
         }
+        if (j.contains("pressure"))
+        {
+            SensorReading p;
+
+            p.device_id = device_id;
+            p.sensor_type = "pressure";
+            p.value = j.at("pressure").get<double>();
+            p.unit = "hPa";
+
+            p.device_timestamp = device_ts;
+            p.server_timestamp = server_ts;
+            p.timestamp = server_ts;
+
+            out.push_back(p);
+        }
+        if (out.empty())
+        {
+            error_msg = "no supported sensor fields";
+            return false;
+        }
         return true;
     }
     catch (const std::exception &e)
@@ -334,26 +560,23 @@ bool DataIngestor::parseJson(const std::string &raw,
 bool DataIngestor::validate(const std::vector<SensorReading> &readings,
                             std::string &error_msg)
 {
+    if (readings.empty())
+    {
+        error_msg = "no readings provided";
+        return false;
+    }
+
     for (const auto &r : readings)
     {
         // 1. allowlist check（空列表=允许全部）
-        if (!allowlist_.empty())
-        {
-            bool found = false;
-            for (const auto &allowed : allowlist_)
-            {
-                if (r.device_id == allowed) { found = true; break; }
-            }
-            if (!found)
-            {
-                error_msg = "device not authorized";
-                return false;
-            }
-        }
-
         if (r.device_id.empty())
         {
             error_msg = "device id is missing";
+            return false;
+        }
+        if (!isDeviceAllowed(r.device_id))
+        {
+            error_msg = "device not authorized";
             return false;
         }
 
@@ -372,10 +595,37 @@ bool DataIngestor::validate(const std::vector<SensorReading> &readings,
                 return false;
             }
         }
+        else if (r.sensor_type == "pressure")
+        {
+            if (r.value < pressure_min_ || r.value > pressure_max_)
+            {
+                error_msg = "pressure is out of the range";
+                return false;
+            }
+        }
         else{
             error_msg="unknown sensor type:"+r.sensor_type;
             return false;
         }
     }
     return true;
+}
+
+bool DataIngestor::isDeviceAllowed(const std::string &device_id) const
+{
+    if (device_id.empty())
+        return false;
+    if (allowlist_.empty())
+        return true;
+    return std::find(allowlist_.begin(), allowlist_.end(), device_id) != allowlist_.end();
+}
+
+bool DataIngestor::isCommandApiAuthorized(const std::string &api_key) const
+{
+    return command_api_key_.empty() || api_key == command_api_key_;
+}
+
+bool DataIngestor::isAllowedCommand(const std::string &command)
+{
+    return command == "buzzer_on" || command == "buzzer_off";
 }

@@ -56,7 +56,10 @@ public:
      * 该函数通常运行在主线程中，进入事件循环
      * 持续接受来自设备端的POST请求
      */
-    void start(int port = 8080);
+    bool start(const std::string &host = "0.0.0.0",
+               int port = 8080,
+               int max_connections = 32,
+               int request_timeout_ms = 5000);
 
     /**
      * @brief 停止HTTP服务器
@@ -84,13 +87,26 @@ private:
      *
      */
     void handleIngest(const std::string &raw_json,
-                      std::string &respond_json);
+                      std::string &respond_json,
+                      int &status_code);
+
+    void handleCreateCommand(const std::string &raw_json,
+                             std::string &respond_json,
+                             int &status_code);
+
+    void handleNextCommand(const std::string &device_id,
+                           std::string &respond_json,
+                           int &status_code);
+
+    void handleCommandAck(const std::string &raw_json,
+                          std::string &respond_json,
+                          int &status_code);
 
     /**
      * @brief 解析JSON数据
      *
      * @param raw_json 原始JSON数据
-     * @param out_readings 输出：拆分后的多条读数（temperature/humidity）
+     * @param out_readings 输出：拆分后的多条读数（temperature/humidity/pressure）
      * @param error_msg 失败返回错误信息
      *
      * @return 是否解析成功
@@ -109,6 +125,9 @@ private:
      */
     bool validate(const std::vector<SensorReading> &readings,
                   std::string &error_msg);
+
+    bool isDeviceAllowed(const std::string &device_id) const;
+    static bool isAllowedCommand(const std::string &command);
 
     //=========== 依赖模块 ==============//
     StorageEngine &storage_; ///< 数据库存储模块

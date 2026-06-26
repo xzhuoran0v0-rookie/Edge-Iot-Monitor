@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 # Config (override via CLI args)
 # ---------------------------------------------------------------------------
 BACKEND_URL  = "http://127.0.0.1:8080/api/ingest"
-DEVICE_ID    = "esp32-s3-sim-001"
+DEVICE_ID    = "esp32s3-001"
 INTERVAL_SEC = 2.0   # seconds between readings
 TIMEOUT_SEC  = 30.0  # HTTP timeout (LLM analysis may take time)
 
@@ -60,10 +60,10 @@ def generate_reading(t: float, inject_anomaly: bool = False) -> dict:
     }
 
 
-def post_reading(payload: dict, timeout_sec: float) -> bool:
+def post_reading(payload: dict, url: str, timeout_sec: float) -> bool:
     data = json.dumps(payload).encode("utf-8")
     req  = urllib.request.Request(
-        BACKEND_URL,
+        url,
         data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -117,7 +117,7 @@ def main():
             print(json.dumps(payload, ensure_ascii=False))
             ok = True  # JSON-only mode, no HTTP
         else:
-            ok = post_reading(payload, args.timeout)
+            ok = post_reading(payload, args.url, args.timeout)
 
         status = "OK" if ok else "FAIL"
         ts = datetime.now().strftime("%H:%M:%S")

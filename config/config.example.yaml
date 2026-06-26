@@ -92,6 +92,15 @@ devices:
     # Add more device IDs here as needed
 
 # ------------------------------------------------------------
+# Optional Local API Security
+# If command_api_key is non-empty, POST /api/commands requires:
+#   X-Api-Key: <command_api_key>
+# Leave empty for local-only development.
+# ------------------------------------------------------------
+security:
+  command_api_key: ""
+
+# ------------------------------------------------------------
 # Sensor Validation — Acceptable Data Ranges
 # Readings outside these ranges are rejected with HTTP 400.
 # ------------------------------------------------------------

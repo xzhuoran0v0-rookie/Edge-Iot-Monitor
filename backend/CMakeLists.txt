@@ -31,6 +31,7 @@ option(EDGE_BUILD_SERVER "Build HTTP ingest server (edge_server)" OFF)
 if(EDGE_BUILD_SERVER)
   # yaml-cpp for config parsing
   find_package(yaml-cpp REQUIRED)
+  find_package(Python3 COMPONENTS Interpreter)
 
   # OpenSSL for HTTPS calls to the DeepSeek API (cpp-httplib SSLClient).
   # On macOS with Homebrew: set OPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 if not found.
@@ -63,6 +64,16 @@ if(EDGE_BUILD_SERVER)
     # cpp-httplib loads system TLS certs from the macOS keychain.
     target_link_libraries(edge_server PRIVATE
       "-framework CoreFoundation" "-framework Security")
+  endif()
+
+  if(BUILD_TESTING AND Python3_Interpreter_FOUND)
+    add_test(
+      NAME backend_api_smoke
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/test_backend_api.py
+    )
+    set_tests_properties(backend_api_smoke PROPERTIES
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
   endif()
 endif()
 

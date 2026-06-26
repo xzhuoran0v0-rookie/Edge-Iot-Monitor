@@ -13,6 +13,8 @@ struct AppConfig
     // ---- server ----
     std::string server_host = "0.0.0.0";
     int server_port = 8080;
+    int server_max_connections = 32;
+    int server_request_timeout_ms = 5000;
 
     // ---- sqlite ----
     std::string db_path = "sensor.db";
@@ -22,6 +24,8 @@ struct AppConfig
     int ollama_port = 11434;
     std::string ollama_model = "qwen2.5:3b";
     int ollama_timeout_s = 120;
+    int ollama_max_tokens = 512;
+    double ollama_temperature = 0.3;
 
     // ---- deepseek（云端首选推理后端） ----
     // api_key 可由环境变量 DEEPSEEK_API_KEY 覆盖（优先级高于 yaml）
@@ -46,7 +50,6 @@ struct AppConfig
     double temp_max = 85.0;
     double hum_min = 0.0;
     double hum_max = 100.0;
-
     // ---- device allowlist ----
     std::vector<std::string> device_allowlist;
 

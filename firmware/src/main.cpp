@@ -12,6 +12,7 @@ void setup()
     delay(3000);
 
     Serial.println("=== Edge IoT Monitor ===");
+    HttpClient::initActuators();
 
     // OLED 初始化
     OLED::init();
@@ -65,6 +66,7 @@ void loop()
 
     // 发送到后端
     HttpClient::postSensorData(temp, humi);
+    HttpClient::pollAndApplyCommand();
 
     delay(5000);
 }

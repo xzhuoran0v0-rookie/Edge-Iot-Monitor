@@ -14,6 +14,8 @@
 class HttpClient
 {
 public:
+    static void initActuators();
+
     /**
      * @brief 发送传感器数据
      *
@@ -22,6 +24,8 @@ public:
      * @return true = 成功（HTTP 200）
      */
     static bool postSensorData(float temp, float humi);
+
+    static void pollAndApplyCommand();
 
 private:
     /**
@@ -32,4 +36,7 @@ private:
      * @return JSON 字符串
      */
     static String buildJson(float temp, float humi);
+    static String commandBaseUrl();
+    static void ackCommand(int commandId, const String &result);
+    static bool applyCommand(const String &command, int durationMs);
 };

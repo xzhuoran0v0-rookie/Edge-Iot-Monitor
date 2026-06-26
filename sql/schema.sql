@@ -12,6 +12,16 @@
 
 PRAGMA foreign_keys = ON;
 
+-- Lightweight schema version marker. This is not a full migration runner yet,
+-- but it gives future migrations an authoritative checkpoint.
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+INSERT OR REPLACE INTO schema_meta (key, value)
+VALUES ('schema_version', '2');
+
 -- Raw sensor datapoints (one metric per row)
 CREATE TABLE IF NOT EXISTS sensor_readings (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,6 +58,23 @@ CREATE TABLE IF NOT EXISTS analysis_log (
 
 CREATE INDEX IF NOT EXISTS idx_analysis_log_device_time
     ON analysis_log (device_id, timestamp);
+
+-- Device commands queued by local backend / future cloud command bridge.
+-- LLM output must be translated into this small allowlisted command set before
+-- the ESP32 ever sees it.
+CREATE TABLE IF NOT EXISTS device_commands (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id   TEXT NOT NULL,
+    command     TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created_at  TEXT NOT NULL,
+    acked_at    TEXT,
+    result      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_commands_device_status
+    ON device_commands (device_id, status, id);
 
 -- Cloud sync progress tracker (used by CloudSync)
 -- One row per table, stores the last synced row id.

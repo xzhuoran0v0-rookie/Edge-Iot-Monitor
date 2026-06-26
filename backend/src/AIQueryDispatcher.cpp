@@ -19,8 +19,11 @@ AIQueryDispatcher::AIQueryDispatcher(
     int trigger_count,
     int window_size,
     DeepSeekConfig deepseek,
-    bool enabled)
-    : storage_(storage), ollama_url_(std::move(ollama_url)), model_(std::move(model)), trigger_count_(trigger_count), window_size_(window_size), deepseek_(std::move(deepseek)), enabled_(enabled)
+    bool enabled,
+    int ollama_timeout_s,
+    int ollama_max_tokens,
+    double ollama_temperature)
+    : storage_(storage), ollama_url_(std::move(ollama_url)), model_(std::move(model)), trigger_count_(trigger_count), window_size_(window_size), deepseek_(std::move(deepseek)), enabled_(enabled), ollama_timeout_s_(ollama_timeout_s), ollama_max_tokens_(ollama_max_tokens), ollama_temperature_(ollama_temperature)
 {
     worker_ = std::thread(&AIQueryDispatcher::workerLoop, this);
 }
@@ -284,17 +287,18 @@ std::string AIQueryDispatcher::callOllama(const std::string &prompt)
 
     httplib::Client cli(host, port);
 
-    // 网络参数
+    // 网络参数（超时可配置：config ollama.timeout_s）
     cli.set_connection_timeout(5);
-    cli.set_read_timeout(60);
+    cli.set_read_timeout(ollama_timeout_s_);
 
     /**
-     * 构建请求体
+     * 构建请求体（max_tokens / temperature 可配置）
      */
     json req = {
         {"model", model_},
         {"prompt", prompt},
-        {"stream", false}};
+        {"stream", false},
+        {"options", {{"num_predict", ollama_max_tokens_}, {"temperature", ollama_temperature_}}}};
 
     auto res = cli.Post("/api/generate",
                         req.dump(),

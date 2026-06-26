@@ -58,6 +58,9 @@ public:
      * @param window_size 每次分析使用的历史数据条数
      * @param deepseek 云端 DeepSeek 配置（首选后端）
      * @param enabled 总开关（config ai.enabled；false 时 onNewData 直接返回）
+     * @param ollama_timeout_s Ollama 读取超时（秒）
+     * @param ollama_max_tokens Ollama 最大输出 token 数
+     * @param ollama_temperature Ollama 采样温度
      */
     explicit AIQueryDispatcher(
         StorageEngine &storage,
@@ -66,7 +69,10 @@ public:
         int trigger_count = 20,
         int window_size = 10,
         DeepSeekConfig deepseek = {},
-        bool enabled = true);
+        bool enabled = true,
+        int ollama_timeout_s = 60,
+        int ollama_max_tokens = 512,
+        double ollama_temperature = 0.3);
 
     /** 停止并回收后台 worker 线程 */
     ~AIQueryDispatcher();
@@ -160,6 +166,10 @@ private:
 
     DeepSeekConfig deepseek_; ///< 云端首选后端配置
     bool enabled_;            ///< 总开关（ai.enabled）
+
+    int ollama_timeout_s_;      ///< Ollama 读取超时（秒）
+    int ollama_max_tokens_;     ///< Ollama 最大输出 token
+    double ollama_temperature_; ///< Ollama 采样温度
 
     /**
      * @brief 每个设备的计数器
