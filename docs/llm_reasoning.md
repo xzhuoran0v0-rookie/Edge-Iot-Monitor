@@ -222,7 +222,7 @@ Ollama should not run on:
 Recommended competition wording:
 
 ```text
-系统默认使用云端大模型 API 进行智能环境风险分析。当云端 LLM 服务不可用、网络异常或 API 调用失败时，系统可切换到本地 Ollama 模型作为备用分析引擎，保证系统仍具备基础智能分析和告警决策能力。Ollama 运行在本地服务器或边缘网关，不运行在 ESP32-S3 设备端。
+The system uses a cloud LLM API for intelligent environment risk analysis by default. If the cloud LLM service is unavailable, the network fails, or an API call cannot be completed, the system can switch to a local Ollama model as its backup analysis engine. This preserves basic intelligent analysis and alarm decisions. Ollama runs on a local server or edge gateway, not on the ESP32-S3 device.
 ```
 
 ## Security Boundaries
