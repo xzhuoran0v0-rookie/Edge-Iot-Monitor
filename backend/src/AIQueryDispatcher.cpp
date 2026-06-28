@@ -201,6 +201,8 @@ std::string AIQueryDispatcher::buildPrompt(
        << "}\n"
        << "Use high risk when temperature is above 35 C or humidity is above 80 %RH.\n"
        << "Use critical risk when temperature is above 40 C or humidity is above 90 %RH.\n"
+       << "Write every human-readable text field in concise English using ASCII characters only.\n"
+       << "Do not output Chinese or any other non-ASCII characters.\n"
        << "Be concise and do not include Markdown.";
 
     return ss.str();

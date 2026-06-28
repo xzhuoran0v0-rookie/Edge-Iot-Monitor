@@ -80,3 +80,6 @@ desktop.ini
 *.swp
 *.swo
 *~
+
+# --- Local project TODOs ---
+/TODO.md

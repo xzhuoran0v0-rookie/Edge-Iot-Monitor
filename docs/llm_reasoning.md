@@ -93,30 +93,31 @@ This is not the ESP32-S3 to IoTDA property report format. It is only an internal
 ## Prompt Template
 
 ```text
-你是一个物联网环境监测系统的云端风险分析模块。
+You are the cloud risk analysis module for an IoT environment monitoring system.
 
-你的任务不是聊天，而是根据最近一段时间的温湿度数据判断环境风险。
+Your task is not to chat. Assess environmental risk from the recent temperature and humidity readings.
 
-请根据以下规则分析：
-1. 判断温度、湿度是否异常。
-2. 判断最近数据是否存在持续升高、持续下降或剧烈波动。
-3. 结合环境监测场景，解释可能原因。
-4. 输出风险等级：normal、low、medium、high、critical。
-5. 给出 1-2 条处理建议。
-6. 判断是否需要触发蜂鸣器告警。
-7. 必须只输出 JSON，不要输出 Markdown，不要输出多余解释。
+Follow these rules:
+1. Determine whether the temperature or humidity is abnormal.
+2. Detect sustained increases, sustained decreases, or sharp fluctuations.
+3. Explain likely causes in the context of environment monitoring.
+4. Return one risk level: normal, low, medium, high, or critical.
+5. Provide one or two recommended actions.
+6. Decide whether the buzzer alarm should be triggered.
+7. Return JSON only, without Markdown or additional explanation.
+8. Write every human-readable text field in concise English using ASCII characters only. Do not output Chinese or other non-ASCII characters.
 
-风险参考：
-- 温度 > 35°C：高温风险
-- 湿度 > 80%RH：高湿风险
-- 湿度持续升高：可能存在凝露、漏水、通风不足风险
-- 温湿度短时间剧烈波动：可能存在传感器异常或环境突变
-- 温度 > 40°C 或湿度 > 90%RH：严重风险
+Risk guidelines:
+- Temperature > 35 C: high-temperature risk
+- Humidity > 80 %RH: high-humidity risk
+- Sustained humidity increase: possible condensation, water leakage, or poor ventilation
+- Sharp short-term temperature or humidity changes: possible sensor fault or sudden environmental change
+- Temperature > 40 C or humidity > 90 %RH: critical risk
 
-最近环境数据如下：
+Recent environment readings:
 {{recent_sensor_data}}
 
-请输出以下 JSON 格式：
+Return JSON in the following format:
 {
   "risk_level": "normal | low | medium | high | critical",
   "risk_score": 0,
@@ -135,11 +136,11 @@ This is not the ESP32-S3 to IoTDA property report format. It is only an internal
 {
   "risk_level": "high",
   "risk_score": 82,
-  "abnormal_reason": "湿度持续升高并超过 80%RH，存在设备受潮或凝露风险。",
-  "trend_analysis": "最近 30 秒湿度从 68.2%RH 上升到 84.1%RH，呈明显上升趋势。",
+  "abnormal_reason": "Humidity is rising above 80 %RH, creating moisture and condensation risk.",
+  "trend_analysis": "Humidity rose from 68.2 %RH to 84.1 %RH in 30 seconds.",
   "suggestions": [
-    "检查设备周围是否存在水汽或漏水。",
-    "加强通风并保持传感器远离潮湿区域。"
+    "Check for moisture or water leaks near the device.",
+    "Improve ventilation and keep the sensor away from damp areas."
   ],
   "alarm_required": true,
   "buzzer_value": "1",
