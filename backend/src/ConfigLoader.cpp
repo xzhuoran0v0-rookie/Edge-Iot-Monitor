@@ -2,8 +2,20 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <cstdlib>
 #include <iostream>
 #include <fstream>
+
+/**
+ * @brief 环境变量覆盖（优先级高于 yaml）
+ *
+ * 目前仅 DEEPSEEK_API_KEY — 便于不把密钥写进配置文件。
+ */
+static void applyEnvOverrides(AppConfig &cfg)
+{
+    if (const char *key = std::getenv("DEEPSEEK_API_KEY"); key && *key)
+        cfg.deepseek_api_key = key;
+}
 
 AppConfig loadConfig(const std::string &path)
 {
@@ -14,6 +26,7 @@ AppConfig loadConfig(const std::string &path)
     {
         std::cerr << "[Config] Cannot open " << path
                   << " — using defaults.\n";
+        applyEnvOverrides(cfg);
         return cfg;
     }
 
@@ -44,6 +57,17 @@ AppConfig loadConfig(const std::string &path)
             if (o["port"])             cfg.ollama_port = o["port"].as<int>();
             if (o["model"])            cfg.ollama_model = o["model"].as<std::string>();
             if (o["timeout_s"])        cfg.ollama_timeout_s = o["timeout_s"].as<int>();
+        }
+
+        // ---- deepseek ----
+        if (root["deepseek"])
+        {
+            auto d = root["deepseek"];
+            if (d["enabled"])          cfg.deepseek_enabled = d["enabled"].as<bool>();
+            if (d["base_url"])         cfg.deepseek_base_url = d["base_url"].as<std::string>();
+            if (d["model"])            cfg.deepseek_model = d["model"].as<std::string>();
+            if (d["api_key"])          cfg.deepseek_api_key = d["api_key"].as<std::string>();
+            if (d["timeout_s"])        cfg.deepseek_timeout_s = d["timeout_s"].as<int>();
         }
 
         // ---- filter ----
@@ -108,5 +132,6 @@ AppConfig loadConfig(const std::string &path)
                   << e.what() << " — using defaults.\n";
     }
 
+    applyEnvOverrides(cfg);
     return cfg;
 }

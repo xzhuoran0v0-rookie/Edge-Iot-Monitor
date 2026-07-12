@@ -32,6 +32,10 @@ if(EDGE_BUILD_SERVER)
   # yaml-cpp for config parsing
   find_package(yaml-cpp REQUIRED)
 
+  # OpenSSL for HTTPS calls to the DeepSeek API (cpp-httplib SSLClient).
+  # On macOS with Homebrew: set OPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3 if not found.
+  find_package(OpenSSL REQUIRED)
+
   # HTTP server: POST /api/ingest -> SQLite inserts
   add_executable(edge_server
     src/main.cpp
@@ -43,7 +47,9 @@ if(EDGE_BUILD_SERVER)
     src/httplib.h
     src/json.hpp
   )
-  target_link_libraries(edge_server PRIVATE edge_storage yaml-cpp::yaml-cpp)
+  target_link_libraries(edge_server PRIVATE edge_storage yaml-cpp::yaml-cpp
+    OpenSSL::SSL OpenSSL::Crypto)
+  target_compile_definitions(edge_server PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT)
   target_include_directories(edge_server PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/src
   )
@@ -51,6 +57,12 @@ if(EDGE_BUILD_SERVER)
   if(WIN32)
     # cpp-httplib uses Winsock on Windows.
     target_link_libraries(edge_server PRIVATE ws2_32)
+  endif()
+
+  if(APPLE)
+    # cpp-httplib loads system TLS certs from the macOS keychain.
+    target_link_libraries(edge_server PRIVATE
+      "-framework CoreFoundation" "-framework Security")
   endif()
 endif()
 

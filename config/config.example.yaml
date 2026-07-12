@@ -27,7 +27,8 @@ sqlite:
 
 # ------------------------------------------------------------
 # Ollama AI Runtime
-# The AIQueryDispatcher calls Ollama's REST API at this address.
+# LOCAL FALLBACK inference backend.
+# Used when DeepSeek is disabled, has no api_key, or a cloud call fails.
 # Ollama must be running: `ollama serve`
 # Model must be pulled: `ollama pull qwen2.5:3b`
 # ------------------------------------------------------------
@@ -38,6 +39,21 @@ ollama:
   timeout_s: 120             # Max seconds to wait for inference response (CPU can be slow)
   max_tokens: 512            # Maximum tokens in the AI response
   temperature: 0.3           # Inference temperature (lower = more deterministic)
+
+# ------------------------------------------------------------
+# DeepSeek Cloud API — PRIMARY inference backend
+# OpenAI-compatible /chat/completions. When enabled with a valid
+# api_key, all analysis goes to DeepSeek first; any failure
+# (network/timeout/HTTP error) falls back to local Ollama above.
+# api_key can also be provided via the DEEPSEEK_API_KEY environment
+# variable, which takes priority over this file. NEVER commit a real key.
+# ------------------------------------------------------------
+deepseek:
+  enabled: true              # Use DeepSeek as the primary inference backend
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-chat"     # or "deepseek-reasoner" for deeper analysis
+  api_key: ""                # sk-... (or set DEEPSEEK_API_KEY env var)
+  timeout_s: 30              # Max seconds to wait for a cloud response
 
 # ------------------------------------------------------------
 # DataFilter — IQR Anomaly Detection

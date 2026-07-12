@@ -1,8 +1,8 @@
 # Edge IoT Monitor
 
-一个边缘侧物联网监控原型：ESP32-S3 采集温湿度数据，通过 HTTP 上报到本地 C++ 后端，后端写入 SQLite、做 IQR 异常检测，并可调用本机 Ollama 生成传感器窗口分析。
+一个边缘侧物联网监控原型：ESP32-S3 采集温湿度数据，通过 HTTP 上报到本地 C++ 后端，后端写入 SQLite、做 IQR 异常检测，并调用 LLM 生成传感器窗口分析（云端 DeepSeek 为主，本机 Ollama 备用）。
 
-当前仓库重点是“本地可跑通”的端到端链路：模拟传感器或 ESP32-S3 → C++ HTTP 接入 → SQLite → 异常检测 → 可选本地 LLM 分析。云端同步代码已预留接口，实际发送逻辑仍是 TODO。
+当前仓库重点是“本地可跑通”的端到端链路：模拟传感器或 ESP32-S3 → C++ HTTP 接入 → SQLite → 异常检测 → LLM 分析（DeepSeek / Ollama）。云端同步代码已预留接口，实际发送逻辑仍是 TODO。
 
 ## 当前状态
 
@@ -13,7 +13,7 @@
 | 本地导入工具 | 可构建运行 | `edge_ingest`，从标准输入读取 JSON 行并写入 SQLite |
 | 数据库存储 | 可用 | SQLite schema 位于 `sql/schema.sql` |
 | 异常检测 | 可用 | 按设备和传感器类型维护滑动窗口，使用 IQR 判定异常 |
-| AI 分析 | 可用但依赖 Ollama | 触发后调用 `qwen2.5:3b`，结果写入 `analysis_log` |
+| AI 分析 | 可用 | 云端 DeepSeek 为主（需 API key），失败自动降级本机 Ollama `qwen2.5:3b`，结果写入 `analysis_log` |
 | 云同步 | 占位 | `CloudSync` 已接入流水线，华为云发送逻辑未实现 |
 
 ## 项目结构
@@ -59,7 +59,8 @@ ESP32-S3 或 scripts/simulate_sensor.py
   -> StorageEngine
       -> sensor_readings / anomaly_events / analysis_log / sync_status
   -> AIQueryDispatcher
-      -> 每 N 条记录触发 Ollama 分析
+      -> 每 N 条记录触发一次 LLM 分析（后台线程执行，不阻塞上报请求）
+      -> 首选云端 DeepSeek，失败自动降级本机 Ollama
   -> CloudSync
       -> 当前仅占位，未真正发送云端请求
 ```
@@ -84,8 +85,9 @@ ESP32-S3 或 scripts/simulate_sensor.py
 - CMake 3.20+
 - C++17 编译器
 - SQLite 源码已随仓库放在 `backend/src/sqlite3.c`
-- 构建 `edge_server` 时需要 `yaml-cpp`
-- 使用 AI 分析时需要本机运行 Ollama，并拉取 `qwen2.5:3b`
+- 构建 `edge_server` 时需要 `yaml-cpp` 和 OpenSSL（DeepSeek HTTPS 调用）
+- 云端 AI 分析需要 DeepSeek API key（写入 `config/config.yaml` 或设置环境变量 `DEEPSEEK_API_KEY`）
+- 本地降级分析需要本机运行 Ollama，并拉取 `qwen2.5:3b`
 
 固件：
 
@@ -109,7 +111,15 @@ cp config/config.example.yaml config/config.yaml
 - 或运行模拟器时指定已允许的设备，例如 `--device esp32s3-001`
 - 或临时把 allowlist 改为空列表 `[]`
 
-2. 如果要使用 AI 分析，启动 Ollama 并拉取模型：
+2. 配置 AI 分析（可选）：
+
+云端 DeepSeek（首选）——在 `config/config.yaml` 的 `deepseek.api_key` 填入 key，或：
+
+```bash
+export DEEPSEEK_API_KEY=sk-...
+```
+
+本地 Ollama 备用（DeepSeek 不可用时自动降级）：
 
 ```bash
 ollama pull qwen2.5:3b
@@ -205,7 +215,8 @@ cp src/config.example.h src/config.h
 
 - `server.port`：HTTP 服务端口，默认 `8080`
 - `sqlite.db_path`：SQLite 文件路径，默认 `sensor.db`
-- `ollama.host` / `ollama.port` / `ollama.model`：本地模型服务
+- `deepseek.enabled` / `deepseek.model` / `deepseek.api_key`：云端首选推理后端（key 也可用 `DEEPSEEK_API_KEY` 环境变量提供，优先级更高）
+- `ollama.host` / `ollama.port` / `ollama.model`：本地备用模型服务
 - `filter.window_seconds` / `filter.iqr_multiplier` / `filter.min_window_samples`：异常检测参数
 - `ai.trigger_every_n_records` / `ai.max_window_records`：AI 分析触发频率和窗口大小
 - `devices.allowlist`：允许接入的设备 ID

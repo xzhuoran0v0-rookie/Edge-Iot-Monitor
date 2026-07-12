@@ -17,11 +17,19 @@ struct AppConfig
     // ---- sqlite ----
     std::string db_path = "sensor.db";
 
-    // ---- ollama ----
+    // ---- ollama（本地备用推理后端） ----
     std::string ollama_host = "http://127.0.0.1";
     int ollama_port = 11434;
     std::string ollama_model = "qwen2.5:3b";
     int ollama_timeout_s = 120;
+
+    // ---- deepseek（云端首选推理后端） ----
+    // api_key 可由环境变量 DEEPSEEK_API_KEY 覆盖（优先级高于 yaml）
+    bool deepseek_enabled = false;
+    std::string deepseek_base_url = "https://api.deepseek.com";
+    std::string deepseek_model = "deepseek-chat";
+    std::string deepseek_api_key;
+    int deepseek_timeout_s = 30;
 
     // ---- filter ----
     int filter_window_seconds = 60;

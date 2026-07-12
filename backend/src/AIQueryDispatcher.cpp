@@ -10,20 +10,38 @@
 using json = nlohmann::json;
 
 // ─────────────────────────────────────────────
-// 构造函数（依赖注入）
+// 构造函数（依赖注入）— 同时启动后台 worker 线程
 // ─────────────────────────────────────────────
 AIQueryDispatcher::AIQueryDispatcher(
     StorageEngine &storage,
     std::string ollama_url,
     std::string model,
     int trigger_count,
-    int window_size)
-    : storage_(storage), ollama_url_(std::move(ollama_url)), model_(std::move(model)), trigger_count_(trigger_count), window_size_(window_size)
+    int window_size,
+    DeepSeekConfig deepseek,
+    bool enabled)
+    : storage_(storage), ollama_url_(std::move(ollama_url)), model_(std::move(model)), trigger_count_(trigger_count), window_size_(window_size), deepseek_(std::move(deepseek)), enabled_(enabled)
 {
+    worker_ = std::thread(&AIQueryDispatcher::workerLoop, this);
 }
 
 // ─────────────────────────────────────────────
-// 数据入口（由 DataIngestor 调用）
+// 析构：通知并回收 worker 线程
+// ─────────────────────────────────────────────
+AIQueryDispatcher::~AIQueryDispatcher()
+{
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stop_ = true;
+    }
+    cv_.notify_all();
+    if (worker_.joinable())
+        worker_.join();
+}
+
+// ─────────────────────────────────────────────
+// 数据入口（由 DataIngestor 的请求线程调用）
+// 只做计数和入队，推理全部交给 worker，不阻塞 HTTP 请求
 // ─────────────────────────────────────────────
 void AIQueryDispatcher::onNewData(const std::vector<SensorReading> &readings)
 {
@@ -33,18 +51,55 @@ void AIQueryDispatcher::onNewData(const std::vector<SensorReading> &readings)
      * - readings 可能包含多个传感器数据
      * - 按“记录条数”计数（更通用）
      */
-    if (readings.empty())
+    if (!enabled_ || readings.empty())
         return;
 
     const std::string &device_id = readings[0].device_id;
 
-    // 累加条数
-    counters_[device_id] += static_cast<int>(readings.size());
-
-    // 达到阈值则触发分析
-    if (counters_[device_id] >= trigger_count_)
+    bool should_notify = false;
     {
-        counters_[device_id] = 0;
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        // 累加条数
+        counters_[device_id] += static_cast<int>(readings.size());
+
+        // 达到阈值则交给 worker 分析（同一设备在队列中只保留一份）
+        if (counters_[device_id] >= trigger_count_)
+        {
+            counters_[device_id] = 0;
+
+            if (pending_set_.insert(device_id).second)
+            {
+                pending_.push_back(device_id);
+                should_notify = true;
+            }
+        }
+    }
+
+    if (should_notify)
+        cv_.notify_one();
+}
+
+// ─────────────────────────────────────────────
+// worker 主循环：串行消费待分析设备
+// ─────────────────────────────────────────────
+void AIQueryDispatcher::workerLoop()
+{
+    while (true)
+    {
+        std::string device_id;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait(lock, [this]
+                     { return stop_ || !pending_.empty(); });
+
+            if (stop_)
+                return;
+
+            device_id = pending_.front();
+            pending_.pop_front();
+            pending_set_.erase(device_id);
+        }
 
         try
         {
@@ -60,7 +115,7 @@ void AIQueryDispatcher::onNewData(const std::vector<SensorReading> &readings)
 }
 
 // ─────────────────────────────────────────────
-// 执行完整分析流程
+// 执行完整分析流程（worker 线程）
 // ─────────────────────────────────────────────
 void AIQueryDispatcher::runAnalysis(const std::string &device_id)
 {
@@ -88,9 +143,9 @@ void AIQueryDispatcher::runAnalysis(const std::string &device_id)
     std::string prompt = buildPrompt(device_id, history);
 
     /**
-     * 3.调用Ollama
+     * 3. 调用 LLM（DeepSeek 优先，失败降级 Ollama）
      */
-    std::string result = callOllama(prompt);
+    std::string result = callLLM(prompt);
 
     /**
      * 4. 存储分析结果
@@ -139,7 +194,71 @@ std::string AIQueryDispatcher::buildPrompt(
 }
 
 // ─────────────────────────────────────────────
-// 调用 Ollama REST API
+// 统一推理入口：DeepSeek 主，Ollama 备
+// ─────────────────────────────────────────────
+std::string AIQueryDispatcher::callLLM(const std::string &prompt)
+{
+    if (deepseek_.enabled && !deepseek_.api_key.empty())
+    {
+        try
+        {
+            std::string result = callDeepSeek(prompt);
+            std::cout << "[AIQuery] backend=deepseek model="
+                      << deepseek_.model << std::endl;
+            return result;
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "[AIQuery] DeepSeek failed (" << e.what()
+                      << "), falling back to local Ollama." << std::endl;
+        }
+    }
+
+    std::string result = callOllama(prompt);
+    std::cout << "[AIQuery] backend=ollama model=" << model_ << std::endl;
+    return result;
+}
+
+// ─────────────────────────────────────────────
+// 调用云端 DeepSeek（OpenAI 兼容 API）
+// ─────────────────────────────────────────────
+std::string AIQueryDispatcher::callDeepSeek(const std::string &prompt)
+{
+    // base_url 形如 "https://api.deepseek.com"，httplib 通用 Client 自行解析 scheme
+    httplib::Client cli(deepseek_.base_url);
+
+    cli.set_connection_timeout(5);
+    cli.set_read_timeout(deepseek_.timeout_s);
+    cli.set_default_headers({{"Authorization", "Bearer " + deepseek_.api_key}});
+
+    json req = {
+        {"model", deepseek_.model},
+        {"messages", json::array({json{{"role", "user"}, {"content", prompt}}})},
+        {"stream", false}};
+
+    auto res = cli.Post("/chat/completions",
+                        req.dump(),
+                        "application/json");
+
+    if (!res)
+    {
+        throw std::runtime_error("DeepSeek connection failed: " +
+                                 httplib::to_string(res.error()));
+    }
+
+    if (res->status != 200)
+    {
+        throw std::runtime_error("DeepSeek HTTP " +
+                                 std::to_string(res->status));
+    }
+
+    auto resp = json::parse(res->body);
+
+    return resp.at("choices").at(0).at("message").at("content").get<std::string>();
+}
+
+// ─────────────────────────────────────────────
+// 调用 Ollama REST API（本地备用）
 // ─────────────────────────────────────────────
 std::string AIQueryDispatcher::callOllama(const std::string &prompt)
 {
@@ -201,7 +320,7 @@ std::string AIQueryDispatcher::callOllama(const std::string &prompt)
 }
 
 // ─────────────────────────────────────────────
-// 保存分析结果
+// 保存分析结果（worker 线程；缓存更新需加锁）
 // ─────────────────────────────────────────────
 void AIQueryDispatcher::saveResult(
     const std::string &device_id,
@@ -215,14 +334,16 @@ void AIQueryDispatcher::saveResult(
     storage_.insertAnalysisLog(device_id, prompt, result);
 
     // 缓存最新结果，供 DataIngestor 回传给设备端
+    std::lock_guard<std::mutex> lock(mutex_);
     last_analysis_[device_id] = result;
 }
 
 // ─────────────────────────────────────────────
-// 获取最近一次分析（回环用）
+// 获取最近一次分析（请求线程；加锁返回拷贝）
 // ─────────────────────────────────────────────
 std::string AIQueryDispatcher::getLastAnalysis(const std::string &device_id) const
 {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = last_analysis_.find(device_id);
     if (it != last_analysis_.end())
         return it->second;

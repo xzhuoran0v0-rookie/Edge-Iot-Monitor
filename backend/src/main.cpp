@@ -49,19 +49,35 @@ int main()
               << "s, IQR=" << cfg.filter_iqr_multiplier
               << ", min_samples=" << cfg.filter_min_samples << ")\n";
 
-    // 3. 初始化 AI 调度器
+    // 3. 初始化 AI 调度器（云端 DeepSeek 主，本地 Ollama 备）
     std::cout << "[INIT] AIQueryDispatcher...\n";
+    DeepSeekConfig deepseek;
+    deepseek.enabled = cfg.deepseek_enabled;
+    deepseek.base_url = cfg.deepseek_base_url;
+    deepseek.model = cfg.deepseek_model;
+    deepseek.api_key = cfg.deepseek_api_key;
+    deepseek.timeout_s = cfg.deepseek_timeout_s;
+
+    const bool deepseek_active = deepseek.enabled && !deepseek.api_key.empty();
     AIQueryDispatcher ai(
         storage,
         cfg.ollamaUrl(),
         cfg.ollama_model,
         cfg.ai_trigger_count,
-        cfg.ai_window_size
+        cfg.ai_window_size,
+        deepseek,
+        cfg.ai_enabled
     );
-    std::cout << "[OK] AI ready (model=" << cfg.ollama_model
+    std::cout << "[OK] AI ready (primary="
+              << (deepseek_active ? "deepseek:" + cfg.deepseek_model
+                                  : "ollama:" + cfg.ollama_model)
+              << ", fallback=ollama:" << cfg.ollama_model
               << ", trigger=" << cfg.ai_trigger_count
               << ", window=" << cfg.ai_window_size
               << (cfg.ai_enabled ? "" : ", DISABLED") << ")\n";
+    if (cfg.deepseek_enabled && cfg.deepseek_api_key.empty())
+        std::cout << "[WARN] deepseek.enabled=true but no api_key "
+                     "(set deepseek.api_key or DEEPSEEK_API_KEY) — using Ollama only\n";
 
     // 4. 初始化云端同步（占位 — 注册后填充 endpoint/credential）
     std::cout << "[INIT] CloudSync...\n";

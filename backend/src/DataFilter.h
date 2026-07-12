@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -88,6 +89,9 @@ private:
      *
      */
     std::unordered_map<std::string, std::deque<WindowSample>> windows_;
+
+    /// httplib 以线程池并发调用 check()/reset()，windows_ 必须加锁
+    std::mutex mutex_;
 
     /**
      * @brief 构造 map key

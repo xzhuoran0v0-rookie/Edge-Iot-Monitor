@@ -21,6 +21,9 @@ DataFilter::DataFilter(int window_seconds, double iqr_multiplier, int min_sample
 // ————————————————————————————————————————
 bool DataFilter::check(const SensorReading &reading)
 {
+    // 整个 检测+更新窗口 流程持锁，防止多个请求线程并发读写 windows_
+    std::lock_guard<std::mutex> lock(mutex_);
+
     // ---- 1.解析 server_timestamp 为 epoch 秒 ----
     const std::string &ts = !reading.server_timestamp.empty() ? reading.server_timestamp : reading.timestamp;
 
@@ -30,14 +33,22 @@ bool DataFilter::check(const SensorReading &reading)
     {
         // 手动解析 ISO8601，避免依赖 <chrono> 的 from_chars,避免macOS不支持的情况
         // 格式：YYYY-MM-DDTHH:MM:SSZ
-        struct tm t = {};
-        t.tm_year = std::stoi(ts.substr(0, 4)) - 1900;
-        t.tm_mon = std::stoi(ts.substr(5, 2)) - 1;
-        t.tm_mday = std::stoi(ts.substr(8, 2));
-        t.tm_hour = std::stoi(ts.substr(11, 2));
-        t.tm_min = std::stoi(ts.substr(14, 2));
-        t.tm_sec = std::stoi(ts.substr(17, 2));
-        now_sec = timegm(&t); // UTC → epoch 秒
+        try
+        {
+            struct tm t = {};
+            t.tm_year = std::stoi(ts.substr(0, 4)) - 1900;
+            t.tm_mon = std::stoi(ts.substr(5, 2)) - 1;
+            t.tm_mday = std::stoi(ts.substr(8, 2));
+            t.tm_hour = std::stoi(ts.substr(11, 2));
+            t.tm_min = std::stoi(ts.substr(14, 2));
+            t.tm_sec = std::stoi(ts.substr(17, 2));
+            now_sec = timegm(&t); // UTC → epoch 秒
+        }
+        catch (const std::exception &)
+        {
+            // 时间戳格式异常时回退到系统时间，不让请求线程带着异常逃逸
+            now_sec = static_cast<int64_t>(std::time(nullptr));
+        }
     }
 
     // ---- 2. 找到窗口，淘汰过期数据 ----

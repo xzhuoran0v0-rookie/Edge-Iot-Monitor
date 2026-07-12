@@ -159,16 +159,26 @@ void DataIngestor::handleIngest(const std::string &raw_json,
     std::string err;
 
     // 1.JSON 解析
+    // 错误信息统一用 nlohmann::json 构造，保证转义后仍是合法 JSON
     if (!parseJson(raw_json, readings, err))
     {
-        response_json = R"({"status":"error","msg":")" + err + R"("})";
+        response_json = json{{"status", "error"}, {"msg", err}}.dump();
+        return;
+    }
+
+    // 载荷合法但不含任何已知传感器字段时 readings 为空，
+    // 后续 readings[0] 会越界，且 validate 的 allowlist 检查会被跳过
+    if (readings.empty())
+    {
+        response_json = json{{"status", "error"},
+                             {"msg", "no sensor data fields (temperature/humidity required)"}}.dump();
         return;
     }
 
     // 2.数据校验
     if (!validate(readings, err))
     {
-        response_json = R"({"status":"error","msg":")" + err + R"("})";
+        response_json = json{{"status", "error"}, {"msg", err}}.dump();
         return;
     }
 
