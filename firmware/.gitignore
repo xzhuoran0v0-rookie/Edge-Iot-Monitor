@@ -3,4 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
-firmware/src/config.h
+# Real credentials — paths are relative to firmware/, not the repo root
+src/config.h
+iotda_mvp/src/config.h

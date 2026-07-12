@@ -4,15 +4,21 @@
 
 # --- Build artifacts ---
 build/
+build-cmake/
 cmake-build-*/
+backend/backend/
+backend/build-mingw/
 *.o
 *.a
 *.so
 *.out
+*.exe
 *.elf
 *.bin
 *.hex
 *.map
+*.bak
+server.err
 
 # --- CMake ---
 CMakeCache.txt
@@ -33,11 +39,17 @@ esp-idf/
 
 # --- Secrets & local config (never commit real credentials) ---
 config/config.yaml
+firmware/src/config.h
+firmware/iotda_mvp/src/config.h
+docs/iotda_activation_local.md
 *.env
 .env.*
 secrets.yaml
 *.pem
 *.key
+
+# --- Local databases (sensor data) ---
+*.db
 
 # --- MySQL dumps (can contain sensitive data) ---
 *.sql.gz
