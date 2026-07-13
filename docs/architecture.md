@@ -1,9 +1,9 @@
 # System Architecture
-# 系统架构文档
+
 
 **Project**: Edge-Intelligence IoT Monitoring & Analysis System  
-**Version**: 1.0  
-**Last Updated**: 2025
+**Version**: 1.1  
+**Last Updated**: 2026-07-13
 
 ---
 
@@ -13,16 +13,16 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                        EDGE DEVICE                              │
 │                                                                 │
-│  ┌──────────┐    I²C    ┌─────────────┐                        │
-│  │ SHT30 /  │──────────▶│  ESP32-S3   │                        │
-│  │ BME280   │           │  N16R8      │                        │
-│  └──────────┘           │             │                        │
-│                         │ MedianFilter│                        │
-│  ┌──────────┐    I²C    │ (C++template│                        │
-│  │ SSD1306  │◀──────────│  on-device) │                        │
-│  │ OLED     │           │             │                        │
-│  │ 128×64   │           └──────┬──────┘                        │
-│  └──────────┘                  │ WiFi 802.11 b/g/n             │
+│  ┌──────────┐    I²C    ┌─────────────┐                         │
+│  │ SHT30 /  │──────────▶│  ESP32-S3   │                         │
+│  │ BME280   │           │  N16R8      │                         │
+│  └──────────┘           │             │                         │
+│                         │ MedianFilter│                         │
+│  ┌──────────┐    I²C    │ (C++template│                         │
+│  │ SSD1306  │◀──────────│  on-device) │                         │
+│  │ OLED     │           │             │                         │
+│  │ 128×64   │           └──────┬──────┘                         │
+│  └──────────┘                  │ WiFi 802.11 b/g/n              │
 └───────────────────────────────┼─────────────────────────────────┘
                                  │
                     HTTP POST /api/ingest
@@ -31,37 +31,38 @@
 ┌───────────────────────────────▼─────────────────────────────────┐
 │                     macOS BACKEND (Apple M5)                    │
 │                                                                 │
-│  ┌─────────────────┐                                           │
-│  │  DataIngestor   │  HTTP server · JSON validation            │
-│  │  (C++17)        │  Input sanitisation · Schema check        │
-│  └────────┬────────┘                                           │
+│  ┌─────────────────┐                                            │
+│  │  DataIngestor   │  HTTP server · JSON validation             │
+│  │  (C++17)        │  Input sanitisation · Schema check         │
+│  └────────┬────────┘                                            │
 │           │                                                     │
-│  ┌────────▼────────┐                                           │
-│  │  DataFilter     │  Sliding IQR anomaly detection            │
-│  │  (C++17)        │  60 s window · 1.5× IQR multiplier        │
-│  └────────┬────────┘                                           │
+│  ┌────────▼────────┐                                            │
+│  │  DataFilter     │  Sliding IQR anomaly detection             │
+│  │  (C++17)        │  60 s window · 1.5× IQR multiplier         │
+│  └────────┬────────┘                                            │
 │           │                                                     │
-│  ┌────────▼────────┐                                           │
-│  │  StorageEngine  │  SQLite persistence (local file)          │
-│  │  (C++17)        │  Indexed by (device_id, timestamp)        │
-│  └────────┬────────┘                                           │
+│  ┌────────▼────────┐                                            │
+│  │  StorageEngine  │  SQLite persistence (local file)           │
+│  │  (C++17)        │  Indexed by (device_id, timestamp)         │
+│  └────────┬────────┘                                            │
 │           │                                                     │
-│  ┌────────▼──────────┐                                         │
-│  │ AIQueryDispatcher │  Builds prompts from sensor windows     │
-│  │ (C++17)           │  REST call → Ollama :11434              │
-│  └────────┬──────────┘  Parses response → analysis_log        │
+│  ┌────────▼──────────┐                                          │
+│  │ AIQueryDispatcher │  Builds prompts from sensor windows      │
+│  │ (C++17)           │  Background worker thread (non-blocking) │
+│  └────────┬──────────┘  LLM call → analysis_log                 │
 │           │                                                     │
-│  ┌────────▼────────────────────────────────┐                  │
-│  │              SQLite 3 (file)            │                  │
-│  │  sensor_readings · anomaly_events ·     │                  │
-│  │  analysis_log                           │                  │
-│  └─────────────────────────────────────────┘                  │
+│  ┌────────▼────────────────────────────────┐                    │
+│  │              SQLite 3 (file)            │                    │
+│  │  sensor_readings · anomaly_events ·     │                    │ 
+│  │  analysis_log                           │                    │
+│  └─────────────────────────────────────────┘                    │
 │                                                                 │
-│  ┌──────────────────────────────────────────┐                  │
-│  │  Ollama Runtime (localhost:11434)         │                  │
-│  │  Model: Qwen2.5-3B                          │                  │
-│  │  RAM usage: ~1.9 GB · 100% local            │                  │
-│  └──────────────────────────────────────────┘                  │
+│  ┌──────────────────────────────────────────┐                   │
+│  │  Inference backends                      │                   │
+│  │  PRIMARY : DeepSeek cloud API (HTTPS)    │                   │
+│  │  FALLBACK: Ollama localhost:11434        │                   │
+│  │            Qwen2.5-3B · ~1.9 GB RAM      │                   │
+│  └──────────────────────────────────────────┘                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -198,7 +199,8 @@ For each incoming reading:
 **Window management:**
 - Window size: 60 seconds of data (dynamic, based on timestamps)
 - Old entries evicted as time advances
-- Separate windows per `device_id`
+- Separate windows per `device_id + sensor_type` pair
+- Window map is mutex-protected — the HTTP server handles requests on a thread pool
 
 ### 4.3 StorageEngine
 
@@ -218,12 +220,18 @@ For each incoming reading:
 **Responsibility:** Periodic LLM analysis of sensor data windows.
 
 - Trigger: every N new records (configurable, default 20)
+- Inference runs on a dedicated background worker thread; ingest requests only
+  enqueue the device_id (deduplicated) and return immediately — a slow LLM call
+  never blocks the HTTP path
 - Queries last 100 readings from SQLite
 - Builds a structured prompt (see below)
-- POSTs to `http://localhost:11434/api/generate` (Ollama REST API)
-- Streams response, accumulates full text
+- **Primary backend**: DeepSeek cloud API — OpenAI-compatible
+  `POST {base_url}/chat/completions` over HTTPS, Bearer-token auth
+- **Fallback backend**: local Ollama `POST /api/generate` — used when DeepSeek
+  is disabled, has no API key, or any cloud call fails (network/timeout/HTTP error)
 - Writes result to `analysis_log`
-- Optionally returns summary in HTTP response to ESP32
+- Latest result per device is cached and returned in subsequent ingest responses
+  (`analysis` field) so the ESP32 can show it on the OLED
 
 **Prompt template:**
 ```
@@ -259,20 +267,26 @@ for `DataFilter` and `AIQueryDispatcher`.
 
 ---
 
-## 6. AI Layer (Ollama + Qwen2.5-3B)
+## 6. AI Layer (DeepSeek cloud + Ollama fallback)
 
-| Attribute | Value |
-|-----------|-------|
-| Model | Qwen2.5-3B |
-| RAM | ~1.9 GB |
-| Accuracy retention | >95% vs full precision |
-| Inference endpoint | `http://localhost:11434/api/generate` |
-| Cloud dependency | None — fully local |
+| Attribute | Primary — DeepSeek | Fallback — Ollama |
+|-----------|--------------------|-------------------|
+| Model | deepseek-chat (configurable) | Qwen2.5-3B |
+| Where it runs | DeepSeek cloud (HTTPS) | localhost:11434, fully local |
+| Endpoint | `POST {base_url}/chat/completions` (OpenAI-compatible) | `POST /api/generate` |
+| Auth | `Authorization: Bearer <api_key>` | none |
+| RAM cost | none | ~1.9 GB |
+| When used | `deepseek.enabled: true` and api_key present | DeepSeek disabled / keyless / call failed |
 
-**Why Qwen2.5-3B?**
+The API key lives in `config/config.yaml` (gitignored, per-project) or the
+`DEEPSEEK_API_KEY` environment variable (takes priority). Every analysis logs
+which backend produced it (`backend=deepseek` / `backend=ollama`).
+
+**Why keep Qwen2.5-3B as the local fallback?**
 - 3B parameter class is lightweight enough to run comfortably on CPU with low RAM usage (~1.9 GB)
 - Qwen2.5 improves over Qwen2 in instruction following, structured output
-- Response latency ~5–15 s on CPU, well suited for periodic analysis
+- Response latency ~5–15 s on CPU — acceptable for periodic analysis when offline
+- Keeps the edge pipeline functional with zero cloud dependency
 
 ---
 
@@ -287,16 +301,33 @@ Headers:  Content-Type: application/json
 Body:     { "device_id": "...", "timestamp": ..., "temperature": ..., "humidity": ... }
 
 Success response (200):
-{ "status": "ok", "anomaly": false }
+{ "status": "ok", "anomaly": false, "analysis": "<latest AI text, once available>" }
 
 Anomaly response (200):
-{ "status": "ok", "anomaly": true, "analysis": "<AI text if available>" }
+{ "status": "ok", "anomaly": true, "analysis": "<latest AI text, once available>" }
 
-Error response (400):
-{ "status": "error", "message": "Invalid temperature range" }
+Error response:
+{ "status": "error", "msg": "temperature is out of the range" }
+
+A payload that parses but contains no known sensor field is rejected:
+{ "status": "error", "msg": "no sensor data fields (temperature/humidity required)" }
 ```
 
-### 7.2 Backend → Ollama (AI Inference)
+### 7.2 Backend → LLM (AI Inference)
+
+Primary — DeepSeek (OpenAI-compatible):
+
+```
+Method:   POST
+Endpoint: https://api.deepseek.com/chat/completions
+Headers:  Authorization: Bearer <api_key>
+Body:     { "model": "deepseek-chat",
+            "messages": [{ "role": "user", "content": "<prompt>" }],
+            "stream": false }
+Response: { "choices": [{ "message": { "content": "<analysis text>" } }] }
+```
+
+Fallback — Ollama (local):
 
 ```
 Method:   POST
@@ -332,10 +363,16 @@ Response: { "response": "<analysis text>", "done": true }
 ## 9. Security Considerations
 
 - The HTTP endpoint is intended for a **local network only** (lab / competition environment)
-- `device_id` is validated against an allowlist (configurable)
+- `device_id` is validated against an allowlist (configurable); payloads without
+  any known sensor field are rejected before touching the pipeline
 - All DB queries use **prepared statements** (no string concatenation)
+- All HTTP responses are built with a JSON library, so error text is always escaped
+- Shared state (filter windows, AI counters/cache) is mutex-protected against
+  concurrent requests
 - Ollama is bound to `localhost` only — not exposed externally
-- Configuration secrets (e.g. WiFi creds, if any) are loaded from `config.yaml`, not hardcoded
+- Secrets live outside version control: `config/config.yaml` (DeepSeek api_key,
+  cloud credentials) and `firmware/src/config.h` (WiFi) are both gitignored;
+  `DEEPSEEK_API_KEY` may be supplied via environment instead
 
 ---
 
