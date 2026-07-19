@@ -1,36 +1,11 @@
 #include <StorageEngine.h>
+#include "nlohmann/json.hpp"
 
-#include <cstdlib>
 #include <iostream>
-#include <regex>
+#include <stdexcept>
 #include <string>
 
-static bool extractString(const std::string &json, const char *key, std::string *out)
-{
-    const std::regex re(std::string("\"") + key + "\"\\s*:\\s*\"([^\"]*)\"");
-    std::smatch m;
-    if (!std::regex_search(json, m, re))
-        return false;
-    *out = m[1].str();
-    return true;
-}
-
-static bool extractNumber(const std::string &json, const char *key, double *out)
-{
-    const std::regex re(std::string("\"") + key + "\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)");
-    std::smatch m;
-    if (!std::regex_search(json, m, re))
-        return false;
-    try
-    {
-        *out = std::stod(m[1].str());
-        return true;
-    }
-    catch (...)
-    {
-        return false;
-    }
-}
+using json = nlohmann::json;
 
 static void usage(const char *argv0)
 {
@@ -54,6 +29,19 @@ static bool insertMetric(StorageEngine &engine,
     r.unit = unit;
     r.timestamp = timestamp; // keep epoch string for now
     return engine.insertReading(r);
+}
+
+static std::string timestampToString(const json &value)
+{
+    if (value.is_string())
+        return value.get<std::string>();
+    if (value.is_number_integer())
+        return std::to_string(value.get<long long>());
+    if (value.is_number_unsigned())
+        return std::to_string(value.get<unsigned long long>());
+    if (value.is_number_float())
+        return std::to_string(static_cast<unsigned long long>(value.get<double>()));
+    throw std::runtime_error("timestamp must be string or number");
 }
 
 int main(int argc, char **argv)
@@ -96,30 +84,64 @@ int main(int argc, char **argv)
         if (line.empty())
             continue;
 
-        std::string deviceId;
-        double tsNum = 0;
-        double temp = 0;
-        double hum = 0;
-        double pres = 0;
+        json payload;
+        try
+        {
+            payload = json::parse(line);
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Skipping line (invalid JSON: " << e.what() << "): " << line << "\n";
+            failCount++;
+            continue;
+        }
 
-        if (!extractString(line, "device_id", &deviceId) ||
-            !extractNumber(line, "timestamp", &tsNum) ||
-            !extractNumber(line, "temperature", &temp) ||
-            !extractNumber(line, "humidity", &hum))
+        if (!payload.contains("device_id") ||
+            !payload.contains("timestamp") ||
+            !payload.contains("temperature") ||
+            !payload.contains("humidity"))
         {
             std::cerr << "Skipping line (missing required keys): " << line << "\n";
             failCount++;
             continue;
         }
 
-        const std::string timestamp = std::to_string(static_cast<unsigned long long>(tsNum));
+        std::string deviceId;
+        std::string timestamp;
+        double temp = 0;
+        double hum = 0;
+        try
+        {
+            deviceId = payload.at("device_id").get<std::string>();
+            timestamp = timestampToString(payload.at("timestamp"));
+            temp = payload.at("temperature").get<double>();
+            hum = payload.at("humidity").get<double>();
+        }
+        catch (const std::exception &e)
+        {
+            std::cerr << "Skipping line (bad field type: " << e.what() << "): " << line << "\n";
+            failCount++;
+            continue;
+        }
 
         bool ok = true;
         ok = ok && insertMetric(engine, deviceId, timestamp, "temperature", temp, "C");
         ok = ok && insertMetric(engine, deviceId, timestamp, "humidity", hum, "%");
 
-        if (extractNumber(line, "pressure", &pres))
-            ok = ok && insertMetric(engine, deviceId, timestamp, "pressure", pres, "hPa");
+        if (payload.contains("pressure"))
+        {
+            try
+            {
+                const double pres = payload.at("pressure").get<double>();
+                ok = ok && insertMetric(engine, deviceId, timestamp, "pressure", pres, "hPa");
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "Skipping line (bad pressure field: " << e.what() << "): " << line << "\n";
+                failCount++;
+                continue;
+            }
+        }
 
         if (ok)
             okCount++;
@@ -130,4 +152,3 @@ int main(int argc, char **argv)
     std::cerr << "Done. ok=" << okCount << " fail=" << failCount << "\n";
     return failCount == 0 ? 0 : 1;
 }
-

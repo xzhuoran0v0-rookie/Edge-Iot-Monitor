@@ -40,6 +40,8 @@ AppConfig loadConfig(const std::string &path)
             auto s = root["server"];
             if (s["host"])             cfg.server_host = s["host"].as<std::string>();
             if (s["port"])             cfg.server_port = s["port"].as<int>();
+            if (s["max_connections"])  cfg.server_max_connections = s["max_connections"].as<int>();
+            if (s["request_timeout_ms"]) cfg.server_request_timeout_ms = s["request_timeout_ms"].as<int>();
         }
 
         // ---- sqlite ----
@@ -57,6 +59,8 @@ AppConfig loadConfig(const std::string &path)
             if (o["port"])             cfg.ollama_port = o["port"].as<int>();
             if (o["model"])            cfg.ollama_model = o["model"].as<std::string>();
             if (o["timeout_s"])        cfg.ollama_timeout_s = o["timeout_s"].as<int>();
+            if (o["max_tokens"])       cfg.ollama_max_tokens = o["max_tokens"].as<int>();
+            if (o["temperature"])      cfg.ollama_temperature = o["temperature"].as<double>();
         }
 
         // ---- deepseek ----
@@ -102,6 +106,11 @@ AppConfig loadConfig(const std::string &path)
                 if (v["humidity"]["min"]) cfg.hum_min = v["humidity"]["min"].as<double>();
                 if (v["humidity"]["max"]) cfg.hum_max = v["humidity"]["max"].as<double>();
             }
+            if (v["pressure"])
+            {
+                if (v["pressure"]["min"]) cfg.pressure_min = v["pressure"]["min"].as<double>();
+                if (v["pressure"]["max"]) cfg.pressure_max = v["pressure"]["max"].as<double>();
+            }
         }
 
         // ---- device allowlist ----
@@ -110,6 +119,12 @@ AppConfig loadConfig(const std::string &path)
             auto list = root["devices"]["allowlist"];
             for (const auto &item : list)
                 cfg.device_allowlist.push_back(item.as<std::string>());
+        }
+
+        // ---- local command API security ----
+        if (root["security"] && root["security"]["command_api_key"])
+        {
+            cfg.command_api_key = root["security"]["command_api_key"].as<std::string>();
         }
 
         // ---- cloud ----

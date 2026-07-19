@@ -19,8 +19,11 @@ AIQueryDispatcher::AIQueryDispatcher(
     int trigger_count,
     int window_size,
     DeepSeekConfig deepseek,
-    bool enabled)
-    : storage_(storage), ollama_url_(std::move(ollama_url)), model_(std::move(model)), trigger_count_(trigger_count), window_size_(window_size), deepseek_(std::move(deepseek)), enabled_(enabled)
+    bool enabled,
+    int ollama_timeout_s,
+    int ollama_max_tokens,
+    double ollama_temperature)
+    : storage_(storage), ollama_url_(std::move(ollama_url)), model_(std::move(model)), trigger_count_(trigger_count), window_size_(window_size), deepseek_(std::move(deepseek)), enabled_(enabled), ollama_timeout_s_(ollama_timeout_s), ollama_max_tokens_(ollama_max_tokens), ollama_temperature_(ollama_temperature)
 {
     worker_ = std::thread(&AIQueryDispatcher::workerLoop, this);
 }
@@ -171,9 +174,10 @@ std::string AIQueryDispatcher::buildPrompt(
      * - 统一格式 → 更易扩展
      * - 让模型自己理解 sensor_type
      */
-    ss << "You are an IoT sensor data analyst.\n";
-    ss << "Analyze the recent readings from device ["
-       << device_id << "] and provide insights.\n\n";
+    ss << "You are the backup reasoning module for an IoT environment monitoring system.\n";
+    ss << "The primary system uses cloud LLM reasoning through Huawei Cloud IoTDA data forwarding.\n";
+    ss << "This local Ollama analysis is only a fallback for offline demos or cloud API failures.\n";
+    ss << "Analyze recent readings from device [" << device_id << "].\n\n";
 
     ss << "## Sensor Readings\n";
 
@@ -184,11 +188,22 @@ std::string AIQueryDispatcher::buildPrompt(
            << r.value << " " << r.unit << "\n";
     }
 
-    ss << "\nAnswer in 2-3 sentences:\n"
-       << "1. Is the system stable?\n"
-       << "2. Any anomaly or trend?\n"
-       << "3. Suggestions?\n"
-       << "Be concise.";
+    ss << "\nReturn only JSON with this shape:\n"
+       << "{\n"
+       << "  \"risk_level\": \"normal | low | medium | high | critical\",\n"
+       << "  \"risk_score\": 0,\n"
+       << "  \"abnormal_reason\": \"\",\n"
+       << "  \"trend_analysis\": \"\",\n"
+       << "  \"suggestions\": [],\n"
+       << "  \"alarm_required\": false,\n"
+       << "  \"buzzer_value\": \"0 | 1\",\n"
+       << "  \"buzzer_pattern\": \"none | slow_beep | fast_beep | continuous\"\n"
+       << "}\n"
+       << "Use high risk when temperature is above 35 C or humidity is above 80 %RH.\n"
+       << "Use critical risk when temperature is above 40 C or humidity is above 90 %RH.\n"
+       << "Write every human-readable text field in concise English using ASCII characters only.\n"
+       << "Do not output Chinese or any other non-ASCII characters.\n"
+       << "Be concise and do not include Markdown.";
 
     return ss.str();
 }
@@ -284,17 +299,18 @@ std::string AIQueryDispatcher::callOllama(const std::string &prompt)
 
     httplib::Client cli(host, port);
 
-    // 网络参数
+    // 网络参数（超时可配置：config ollama.timeout_s）
     cli.set_connection_timeout(5);
-    cli.set_read_timeout(60);
+    cli.set_read_timeout(ollama_timeout_s_);
 
     /**
-     * 构建请求体
+     * 构建请求体（max_tokens / temperature 可配置）
      */
     json req = {
         {"model", model_},
         {"prompt", prompt},
-        {"stream", false}};
+        {"stream", false},
+        {"options", {{"num_predict", ollama_max_tokens_}, {"temperature", ollama_temperature_}}}};
 
     auto res = cli.Post("/api/generate",
                         req.dump(),

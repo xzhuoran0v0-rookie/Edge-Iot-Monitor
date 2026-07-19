@@ -1,226 +1,138 @@
 # Edge IoT Monitor
 
-一个边缘侧物联网监控原型：ESP32-S3 采集温湿度数据，通过 HTTP 上报到本地 C++ 后端，后端写入 SQLite、做 IQR 异常检测，并调用 LLM 生成传感器窗口分析（云端 DeepSeek 为主，本机 Ollama 备用）。
+Edge IoT Monitor is a competition-oriented intelligent environment monitoring and alerting system. It uses an ESP32-S3 with an SHT30 temperature and humidity sensor, OLED display, and buzzer, then connects the device to Huawei Cloud IoTDA for cloud-based data ingestion, LLM-assisted risk reasoning, and command-based alert control.
 
-当前仓库重点是“本地可跑通”的端到端链路：模拟传感器或 ESP32-S3 → C++ HTTP 接入 → SQLite → 异常检测 → LLM 分析（DeepSeek / Ollama）。云端同步代码已预留接口，实际发送逻辑仍是 TODO。
-
-## 当前状态
-
-| 模块 | 状态 | 说明 |
-|---|---|---|
-| 固件 | 可构建原型 | PlatformIO + Arduino，支持 WiFi、SHT30、OLED、HTTP 上报 |
-| 后端 HTTP 服务 | 可构建运行 | `edge_server`，接收 `POST /api/ingest` |
-| 本地导入工具 | 可构建运行 | `edge_ingest`，从标准输入读取 JSON 行并写入 SQLite |
-| 数据库存储 | 可用 | SQLite schema 位于 `sql/schema.sql` |
-| 异常检测 | 可用 | 按设备和传感器类型维护滑动窗口，使用 IQR 判定异常 |
-| AI 分析 | 可用 | 云端 DeepSeek 为主（需 API key），失败自动降级本机 Ollama `qwen2.5:3b`，结果写入 `analysis_log` |
-| 云同步 | 占位 | `CloudSync` 已接入流水线，华为云发送逻辑未实现 |
-
-## 项目结构
+The project direction is no longer a local chatbot on embedded hardware. The ESP32-S3 focuses on sensing and execution, while cloud services handle device access, data forwarding, LLM reasoning, and downlink commands.
 
 ```text
-edge-iot-monitor/
-├── backend/                 # C++17 后端与本地导入工具
-│   ├── CMakeLists.txt
-│   └── src/
-│       ├── main.cpp         # edge_server 入口
-│       ├── ingest_stdin.cpp # edge_ingest 入口
-│       ├── DataIngestor.*   # HTTP 接入、JSON 解析、数据校验
-│       ├── DataFilter.*     # IQR 异常检测
-│       ├── StorageEngine.*  # SQLite 初始化、插入、查询
-│       ├── AIQueryDispatcher.*
-│       ├── CloudSync.*      # 云同步占位
-│       └── ConfigLoader.*   # config/config.yaml 加载
-├── config/
-│   └── config.example.yaml  # 后端示例配置
-├── docs/
-│   └── architecture.md      # 架构说明
-├── firmware/                # ESP32-S3 PlatformIO 工程
-│   ├── platformio.ini
-│   └── src/
-├── scripts/
-│   ├── simulate_sensor.py   # 模拟传感器，可 HTTP POST 或输出 JSON 行
-│   └── test_ollama.py       # Ollama 连通性和推理测试
-└── sql/
-    └── schema.sql           # SQLite 表结构
+ESP32-S3 + SHT30
+  -> Huawei Cloud IoTDA
+  -> Cloud analysis service
+  -> Cloud LLM API, with local Ollama as backup
+  -> IoTDA command downlink
+  -> ESP32-S3 buzzer / OLED alert
 ```
 
-## 数据流
+## Project Goal
+
+Build a closed-loop cloud intelligent monitoring system:
+
+- Collect temperature and humidity from SHT30.
+- Report device properties to Huawei Cloud IoTDA using the official device-side MQTT format.
+- Forward IoTDA data to a cloud analysis service.
+- Use a cloud LLM to analyze recent environmental trends and risk.
+- Keep local Ollama as a backup reasoning engine, not as the main device-side design.
+- Downlink alert commands through IoTDA.
+- Let ESP32-S3 control buzzer/GPIO and display state on OLED.
+
+## Hardware
+
+| Component | Role |
+|---|---|
+| ESP32-S3 | Wi-Fi device, sensor acquisition, IoTDA connection, command execution |
+| SHT30 | Temperature and humidity sensing |
+| OLED | Local reading, network, and alert status display |
+| Buzzer | Audible alert output controlled by GPIO |
+
+See [hardware.md](docs/hardware.md) for wiring and device-side responsibilities.
+
+## Architecture
+
+The recommended competition architecture is:
 
 ```text
-ESP32-S3 或 scripts/simulate_sensor.py
-  -> POST /api/ingest
-  -> DataIngestor
-      -> JSON 解析与范围校验
-      -> 拆分为 temperature / humidity 传感器行
-  -> DataFilter
-      -> 每个 device_id + sensor_type 独立滑动窗口
-      -> IQR 异常检测
-  -> StorageEngine
-      -> sensor_readings / anomaly_events / analysis_log / sync_status
-  -> AIQueryDispatcher
-      -> 每 N 条记录触发一次 LLM 分析（后台线程执行，不阻塞上报请求）
-      -> 首选云端 DeepSeek，失败自动降级本机 Ollama
-  -> CloudSync
-      -> 当前仅占位，未真正发送云端请求
+ESP32-S3
+  -> MQTT/MQTTS property report
+  -> Huawei Cloud IoTDA
+  -> data forwarding
+  -> FunctionGraph / ECS / container service
+  -> LLM risk reasoning
+  -> IoTDA command downlink
+  -> buzzer alert
 ```
 
-当前 HTTP 载荷支持 `temperature` 和 `humidity`。模拟器也会生成 `pressure`，但 HTTP 服务目前不会存储 pressure；本地 `edge_ingest` 工具支持把 pressure 写入数据库。
+Detailed documents:
 
-示例载荷：
+- [architecture.md](docs/architecture.md): system overview
+- [cloud_iotda.md](docs/cloud_iotda.md): Huawei Cloud IoTDA topics, product model, property report, and command downlink
+- [llm_reasoning.md](docs/llm_reasoning.md): LLM prompt, risk reasoning, cloud API, and Ollama backup
+- [backend_service.md](docs/backend_service.md): cloud analysis service responsibilities
+- [data_flow.md](docs/data_flow.md): end-to-end data and command flow
+- [competition_writeup.md](docs/competition_writeup.md): competition-ready wording
 
-```json
-{
-  "device_id": "esp32s3-001",
-  "timestamp": 1700000000,
-  "temperature": 24.3,
-  "humidity": 58.7
-}
-```
+## Current Repository Status
 
-## 依赖
+The repository still contains a working local prototype:
 
-后端：
+| Area | Current state |
+|---|---|
+| Firmware | PlatformIO + Arduino prototype for Wi-Fi, SHT30, OLED, HTTP ingest, and command polling |
+| Backend | C++ HTTP service with ingest, SQLite storage, anomaly detection, and local command queue |
+| Local LLM | Optional Ollama analysis for local backup reasoning |
+| Cloud integration | Being redesigned around Huawei Cloud IoTDA and cloud LLM reasoning |
 
-- CMake 3.20+
-- C++17 编译器
-- SQLite 源码已随仓库放在 `backend/src/sqlite3.c`
-- 构建 `edge_server` 时需要 `yaml-cpp` 和 OpenSSL（DeepSeek HTTPS 调用）
-- 云端 AI 分析需要 DeepSeek API key（写入 `config/config.yaml` 或设置环境变量 `DEEPSEEK_API_KEY`）
-- 本地降级分析需要本机运行 Ollama，并拉取 `qwen2.5:3b`
+The existing local backend is useful as a fallback and development harness. The competition architecture should present IoTDA as the primary device access and command channel.
 
-固件：
+## Local Prototype Quick Start
 
-- PlatformIO
-- ESP32-S3 DevKitC-1
-- Arduino framework
-- SHT30 传感器
-- OLED 显示模块
-
-## 快速开始：后端 HTTP 服务
-
-1. 准备配置文件：
+Create local backend config:
 
 ```bash
 cp config/config.example.yaml config/config.yaml
 ```
 
-注意 `config.example.yaml` 默认启用了设备 allowlist。模拟器默认设备是 `esp32-s3-sim-001`，可以选择：
-
-- 把 `esp32-s3-sim-001` 加到 `config/config.yaml` 的 `devices.allowlist`
-- 或运行模拟器时指定已允许的设备，例如 `--device esp32s3-001`
-- 或临时把 allowlist 改为空列表 `[]`
-
-2. 配置 AI 分析（可选）：
-
-云端 DeepSeek（首选）——在 `config/config.yaml` 的 `deepseek.api_key` 填入 key，或：
-
-```bash
-export DEEPSEEK_API_KEY=sk-...
-```
-
-本地 Ollama 备用（DeepSeek 不可用时自动降级）：
-
-```bash
-ollama pull qwen2.5:3b
-```
-
-3. 构建 HTTP 服务：
+Build and run the backend:
 
 ```bash
 cmake -S . -B build-cmake -DEDGE_BUILD_SERVER=ON
 cmake --build build-cmake
-```
-
-4. 运行后端：
-
-```bash
 ./build-cmake/backend/edge_server
 ```
 
-服务启动后会监听：
-
-- `GET /health`
-- `POST /api/ingest`
-
-5. 用模拟器发送数据：
+Send simulated readings:
 
 ```bash
 python3 scripts/simulate_sensor.py --device esp32s3-001 --count 10
 ```
 
-## 快速开始：无需 HTTP 的本地写库测试
-
-默认构建会生成 `edge_ingest`，它适合快速验证 SQLite 写入：
+Run backend smoke test:
 
 ```bash
-cmake -S . -B build-cmake
-cmake --build build-cmake
-python3 scripts/simulate_sensor.py --stdout --count 10 | ./build-cmake/backend/edge_ingest --db sensor.db
+python3 scripts/test_backend_api.py
 ```
 
-这条链路不会调用 HTTP、异常检测或 Ollama，只验证 JSON 行解析和 SQLite 写入。
+## Firmware Setup
 
-## 测试 Ollama
+Install PlatformIO if needed:
 
 ```bash
-python3 scripts/test_ollama.py --model qwen2.5:3b
+python3 -m pip install --user -r requirements-dev.txt
 ```
 
-如果只是检查 Ollama 是否在线：
-
-```bash
-python3 scripts/test_ollama.py --check-only
-```
-
-## 固件配置
-
-固件位于 `firmware/`，使用 PlatformIO：
+Build firmware:
 
 ```bash
 cd firmware
 pio run
 ```
 
-首次烧录前需要基于示例创建本地配置：
+Create local firmware config before flashing:
 
 ```bash
 cp src/config.example.h src/config.h
 ```
 
-然后填写：
+`src/config.h` is local and sensitive. Do not commit Wi-Fi credentials, IoTDA secrets, or API keys.
 
-- `WIFI_SSID`
-- `WIFI_PASS`
-- `SERVER_URL`，例如 `http://192.168.x.x:8080/api/ingest`
+## Security Boundaries
 
-`src/config.h` 属于本地敏感配置，不应提交。
-
-## 数据库
-
-数据库表结构由 `sql/schema.sql` 维护，`StorageEngine::init()` 会在启动时执行该 schema。
-
-主要表：
-
-- `sensor_readings`：每条传感器指标一行
-- `anomaly_events`：异常检测结果
-- `analysis_log`：LLM prompt 和 response
-- `sync_status`：云同步进度占位
-
-## 配置说明
-
-后端启动时读取 `config/config.yaml`。如果文件不存在，会使用代码里的默认值。
-
-常用配置：
-
-- `server.port`：HTTP 服务端口，默认 `8080`
-- `sqlite.db_path`：SQLite 文件路径，默认 `sensor.db`
-- `deepseek.enabled` / `deepseek.model` / `deepseek.api_key`：云端首选推理后端（key 也可用 `DEEPSEEK_API_KEY` 环境变量提供，优先级更高）
-- `ollama.host` / `ollama.port` / `ollama.model`：本地备用模型服务
-- `filter.window_seconds` / `filter.iqr_multiplier` / `filter.min_window_samples`：异常检测参数
-- `ai.trigger_every_n_records` / `ai.max_window_records`：AI 分析触发频率和窗口大小
-- `devices.allowlist`：允许接入的设备 ID
-- `cloud.*`：华为云 IoTDA 预留配置，当前发送逻辑未完成
+- Do not put LLM API keys in ESP32 firmware.
+- Do not let ESP32-S3 call DeepSeek, Tongyi, Pangu, or OpenAI directly.
+- Do not run Ollama on ESP32-S3.
+- Do not invent custom IoTDA outer JSON formats.
+- Do not expose device GPIO control directly to the public network.
+- Validate LLM output before converting it into IoTDA commands.
+- Keep real credentials in local config or cloud environment variables only.
 
 ## License
 

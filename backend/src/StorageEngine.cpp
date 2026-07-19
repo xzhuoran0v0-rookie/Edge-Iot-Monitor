@@ -270,3 +270,94 @@ bool StorageEngine::insertAnalysisLog(const std::string &device_id,
     sqlite3_finalize(stmt);
     return true;
 }
+
+bool StorageEngine::enqueueDeviceCommand(const std::string &device_id,
+                                         const std::string &command,
+                                         int duration_ms,
+                                         int *command_id)
+{
+    static constexpr const char *kSql =
+        "INSERT INTO device_commands "
+        "(device_id, command, duration_ms, status, created_at) "
+        "VALUES (?, ?, ?, 'pending', ?);";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "[Storage] prepare command failed: " << sqlite3_errmsg(db_) << std::endl;
+        return false;
+    }
+
+    const std::string now = nowIso8601Utc();
+    sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, command.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, duration_ms);
+    sqlite3_bind_text(stmt, 4, now.c_str(), -1, SQLITE_TRANSIENT);
+
+    const int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+        return false;
+
+    if (command_id)
+        *command_id = static_cast<int>(sqlite3_last_insert_rowid(db_));
+    return true;
+}
+
+bool StorageEngine::getPendingDeviceCommand(const std::string &device_id,
+                                            DeviceCommand &command)
+{
+    static constexpr const char *kSql =
+        "SELECT id, device_id, command, duration_ms, status "
+        "FROM device_commands "
+        "WHERE device_id = ? AND status = 'pending' "
+        "ORDER BY id ASC LIMIT 1;";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    const int rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW)
+    {
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    command.id = sqlite3_column_int(stmt, 0);
+    command.device_id = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+    command.command = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 2));
+    command.duration_ms = sqlite3_column_int(stmt, 3);
+    command.status = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 4));
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool StorageEngine::ackDeviceCommand(const std::string &device_id,
+                                     int command_id,
+                                     const std::string &result)
+{
+    static constexpr const char *kSql =
+        "UPDATE device_commands "
+        "SET status = 'acked', acked_at = ?, result = ? "
+        "WHERE id = ? AND device_id = ? AND status = 'pending';";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    const std::string now = nowIso8601Utc();
+    sqlite3_bind_text(stmt, 1, now.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, result.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, command_id);
+    sqlite3_bind_text(stmt, 4, device_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    const int rc = sqlite3_step(stmt);
+    const int changed = sqlite3_changes(db_);
+    sqlite3_finalize(stmt);
+
+    return rc == SQLITE_DONE && changed == 1;
+}

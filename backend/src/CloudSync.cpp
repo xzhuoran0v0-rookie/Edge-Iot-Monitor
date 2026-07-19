@@ -11,12 +11,14 @@ CloudSync::CloudSync(
     std::string endpoint,
     std::string project_id,
     std::string device_id,
-    std::string credential)
+    std::string credential,
+    bool enabled)
     : storage_(storage)
     , endpoint_(std::move(endpoint))
     , project_id_(std::move(project_id))
     , device_id_(std::move(device_id))
     , credential_(std::move(credential))
+    , enabled_(enabled)
 {
 }
 
@@ -25,7 +27,7 @@ CloudSync::CloudSync(
 // ─────────────────────────────────────────────
 bool CloudSync::isEnabled() const
 {
-    return !endpoint_.empty() && !credential_.empty();
+    return enabled_ && !endpoint_.empty() && !credential_.empty();
 }
 
 // ─────────────────────────────────────────────
@@ -44,8 +46,7 @@ void CloudSync::onNewData(const std::vector<SensorReading> &readings)
     if (++log_count % 10 == 0)
     {
         std::cout << "[CloudSync] " << pending_count_
-                  << " records pending (cloud disabled — "
-                  << "implement sendToCloud() after registration)"
+                  << " records pending (sendToCloud() not implemented yet)"
                   << std::endl;
     }
 }

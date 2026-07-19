@@ -24,13 +24,15 @@ public:
      * @param project_id 华为云项目 ID
      * @param device_id  设备 ID（注册到 IoTDA 的设备标识）
      * @param credential 设备密钥（HMAC-SHA256 签名用，平台侧下发的 secret）
+     * @param enabled    是否启用云同步
      */
     CloudSync(
         StorageEngine &storage,
         std::string endpoint,
         std::string project_id,
         std::string device_id,
-        std::string credential);
+        std::string credential,
+        bool enabled = false);
 
     /**
      * @brief 将新入库的数据批量同步到云端
@@ -92,6 +94,7 @@ private:
     std::string project_id_;
     std::string device_id_;
     std::string credential_;
+    bool enabled_ = false;
 
     // ---- 内部计数器 ----
     int pending_count_ = 0;  ///< 自上次 sync 后累积的未发送条数

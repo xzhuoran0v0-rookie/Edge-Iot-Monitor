@@ -11,12 +11,15 @@
 
 // 全局运行标志(用于优雅退出)
 std::atomic<bool> g_running(true);
+DataIngestor *g_ingestor = nullptr;
 
 // 信号处理
 void signalHandler(int signum)
 {
     std::cout << "\n[INFO] Interrupt signal (" << signum << ") received.\n";
     g_running = false;
+    if (g_ingestor)
+        g_ingestor->stop();
 }
 
 int main()
@@ -66,7 +69,10 @@ int main()
         cfg.ai_trigger_count,
         cfg.ai_window_size,
         deepseek,
-        cfg.ai_enabled
+        cfg.ai_enabled,
+        cfg.ollama_timeout_s,
+        cfg.ollama_max_tokens,
+        cfg.ollama_temperature
     );
     std::cout << "[OK] AI ready (primary="
               << (deepseek_active ? "deepseek:" + cfg.deepseek_model
@@ -86,7 +92,8 @@ int main()
         cfg.cloud_endpoint,
         cfg.cloud_project_id,
         cfg.cloud_device_id,
-        cfg.cloud_credential
+        cfg.cloud_credential,
+        cfg.cloud_enabled
     );
     std::cout << "[OK] CloudSync ready"
               << (cloud.isEnabled() ? " (ENABLED)" : " (disabled — set cloud.enabled in config.yaml)")
@@ -97,14 +104,25 @@ int main()
     DataIngestor ingestor(storage, filter, ai, cloud,
                            cfg.temp_min, cfg.temp_max,
                            cfg.hum_min,  cfg.hum_max,
-                           cfg.device_allowlist);
+                           cfg.pressure_min, cfg.pressure_max,
+                           cfg.device_allowlist,
+                           cfg.command_api_key);
+    g_ingestor = &ingestor;
 
     std::cout << "[OK] HTTP Server starting at http://" << cfg.server_host
               << ":" << cfg.server_port << "\n";
     std::cout << "[INFO] Press Ctrl+C to stop\n";
 
-    // 关键点：start() 是阻塞的
-    ingestor.start(cfg.server_port);
+    // 关键点：start() 是阻塞的；绑定失败会返回 false。
+    if (!ingestor.start(cfg.server_host,
+                        cfg.server_port,
+                        cfg.server_max_connections,
+                        cfg.server_request_timeout_ms))
+    {
+        g_ingestor = nullptr;
+        return 1;
+    }
+    g_ingestor = nullptr;
 
     // （理论上走不到这里，除非你实现了 stop）
     std::cout << "[SHUTDOWN] Server stopped\n";

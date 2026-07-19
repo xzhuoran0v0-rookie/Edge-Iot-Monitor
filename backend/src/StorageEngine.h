@@ -25,6 +25,15 @@ struct SensorReading
     std::string device_timestamp;
 };
 
+struct DeviceCommand
+{
+    int id = 0;
+    std::string device_id;
+    std::string command;
+    int duration_ms = 0;
+    std::string status;
+};
+
 /**
  * @brief 存储引擎（负责和 SQLite 数据库交互）
  *
@@ -89,6 +98,18 @@ public:
     bool insertAnalysisLog(const std::string &device_id,
                            const std::string &prompt,
                            const std::string &result);
+
+    bool enqueueDeviceCommand(const std::string &device_id,
+                              const std::string &command,
+                              int duration_ms,
+                              int *command_id);
+
+    bool getPendingDeviceCommand(const std::string &device_id,
+                                 DeviceCommand &command);
+
+    bool ackDeviceCommand(const std::string &device_id,
+                          int command_id,
+                          const std::string &result);
 
 private:
     std::string db_path_;   // 数据库文件路径

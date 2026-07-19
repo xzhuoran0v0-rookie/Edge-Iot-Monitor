@@ -372,7 +372,7 @@ def main():
         print("  ✓ AI pipeline verified successfully!")
         print()
         print("  Next steps:")
-        print("    1. Start the C++ backend:  ./build/edge_backend")
+        print("    1. Start the C++ backend:  ./build-cmake/backend/edge_server")
         print("    2. Run the simulator:      python3 scripts/simulate_sensor.py")
         print("    3. Check SQLite results:")
         print("         sqlite3 sensor.db \"SELECT COUNT(*) FROM sensor_readings;\"")

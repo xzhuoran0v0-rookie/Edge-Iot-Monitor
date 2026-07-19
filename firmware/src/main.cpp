@@ -2,6 +2,7 @@
 #include "config.h"
 #include "wifi_manager.h"
 #include "http_client.h"
+#include "iotda_client.h"
 #include "sht30.h"
 #include "oled.h"
 #include "median_filter.h"
@@ -12,6 +13,8 @@ void setup()
     delay(3000);
 
     Serial.println("=== Edge IoT Monitor ===");
+    HttpClient::initActuators();
+    IotdaClient::logPlannedTopics();
 
     // OLED 初始化
     OLED::init();
@@ -63,8 +66,17 @@ void loop()
     // 显示到 OLED
     OLED::showSensorData(temp, humi);
 
-    // 发送到后端
+    // Local backup path: send to the local backend while IoTDA credentials
+    // are not configured yet.
     HttpClient::postSensorData(temp, humi);
+    HttpClient::pollAndApplyCommand();
+
+    // IoTDA preparation: build the official property report payload now.
+    // Actual MQTT/MQTTS publishing will be enabled after IoTDA registration.
+#if IOTDA_ENABLED
+    Serial.print("[IoTDA] Prepared report: ");
+    Serial.println(IotdaClient::buildPropertyReport(temp, humi));
+#endif
 
     delay(5000);
 }
