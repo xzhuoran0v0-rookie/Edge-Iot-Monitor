@@ -6,3 +6,4 @@
 # Real credentials — paths are relative to firmware/, not the repo root
 src/config.h
 iotda_mvp/src/config.h
+combined/src/config.h
