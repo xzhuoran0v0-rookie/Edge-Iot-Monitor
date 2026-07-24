@@ -3,8 +3,9 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-#define OLED_SDA 39//
-#define OLED_SCL 38//
+// OLED 使用第二条硬件 I2C 总线 (Wire1)，与 SHT30 (默认 Wire, GPIO17/18) 隔离
+#define OLED_SDA 39   // Wire1 SDA
+#define OLED_SCL 38   // Wire1 SCL
 #define OLED_ADDR 0x3c
 
 #define OLED_WIDTH 128
