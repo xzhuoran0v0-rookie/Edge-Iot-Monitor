@@ -1,5 +1,9 @@
 #include "oled.h"
 
+// OLED 走 ESP32-S3 的第二条硬件 I2C 总线 (Wire1)，与 SHT30 的默认 Wire (GPIO17/18) 隔离。
+// 引脚为 OLED_SDA(39) / OLED_SCL(38)，在 OLED::init() 中 begin。
+static TwoWire OLED_I2C = TwoWire(1);
+
 uint8_t OLED::cursor_page_ = 0;
 uint8_t OLED::cursor_col_ = 0;
 
@@ -64,27 +68,31 @@ const uint8_t OLED::font5x7[][5] = {
     {0x63,0x14,0x08,0x14,0x63}, // 'X'
     {0x07,0x08,0x70,0x08,0x07}, // 'Y'
     {0x61,0x51,0x49,0x45,0x43}, // 'Z'
+    {0x00,0x06,0x09,0x06,0x00}, // '[' -> 度数符号 (°)，小圆圈显示在字符顶部
 };
 
 void OLED::sendCmd(uint8_t cmd)
 {
-    Wire.beginTransmission(OLED_ADDR);
-    Wire.write(0x00);  // Co=0, D/C#=0 命令模式
-    Wire.write(cmd);
-    Wire.endTransmission();
+    OLED_I2C.beginTransmission(OLED_ADDR);
+    OLED_I2C.write(0x00);  // Co=0, D/C#=0 命令模式
+    OLED_I2C.write(cmd);
+    OLED_I2C.endTransmission();
 }
 
 void OLED::sendData(uint8_t *buf, size_t len)
 {
-    Wire.beginTransmission(OLED_ADDR);
-    Wire.write(0x40);  // Co=0, D/C#=1 数据模式
+    OLED_I2C.beginTransmission(OLED_ADDR);
+    OLED_I2C.write(0x40);  // Co=0, D/C#=1 数据模式
     for (size_t i = 0; i < len; i++)
-        Wire.write(buf[i]);
-    Wire.endTransmission();
+        OLED_I2C.write(buf[i]);
+    OLED_I2C.endTransmission();
 }
 
 bool OLED::init()
 {
+    // 启动 OLED 专用 I2C 总线（Wire1: SDA=39, SCL=38）
+    OLED_I2C.begin(OLED_SDA, OLED_SCL);
+
     // SSD1315 初始化序列
     const uint8_t cmds[] = {
         0xAE,        // 关显示
@@ -139,7 +147,7 @@ void OLED::setCursor(uint8_t page, uint8_t col)
 
 void OLED::drawChar(char c)
 {
-    if (c < ' ' || c > 'Z')
+    if (c < ' ' || c > '[')   // 字库范围：空格(0x20)~'['(0x5B)，'[' 复用为度数符号
         c = ' ';
 
     const uint8_t *glyph = font5x7[c - ' '];
@@ -172,7 +180,7 @@ void OLED::showSensorData(float temp, float humi)
 
     // 第二行：温度
     setCursor(2, 0);
-    drawString("TEMP: " + String(temp, 1) + "C");
+    drawString("TEMP: " + String(temp, 1) + "[C");  // '[' 在字库里是度数符号
 
     // 第三行：湿度
     setCursor(4, 0);
