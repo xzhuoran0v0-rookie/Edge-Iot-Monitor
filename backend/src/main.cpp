@@ -22,13 +22,16 @@ void signalHandler(int signum)
         g_ingestor->stop();
 }
 
-int main()
+int main(int argc, char **argv)
 {
     // 注册信号
     std::signal(SIGINT, signalHandler);
 
     // 0. 加载配置（config.yaml → 结构体，缺失项用默认值）
-    AppConfig cfg = loadConfig("config/config.yaml");
+    //    可用 argv[1] 指定配置路径：测试用临时配置，部署时指向 /etc 下的配置。
+    const std::string config_path = argc > 1 ? argv[1] : "config/config.yaml";
+    AppConfig cfg = loadConfig(config_path);
+    std::cout << "[INIT] Config: " << config_path << "\n";
 
     std::cout << "=====================================\n";
     std::cout << " Edge IoT Monitor Backend Starting...\n";
@@ -61,12 +64,20 @@ int main()
     deepseek.api_key = cfg.deepseek_api_key;
     deepseek.timeout_s = cfg.deepseek_timeout_s;
 
+    NarrationTriggerConfig narration_trigger;
+    narration_trigger.min_interval_s = cfg.ai_min_interval_s;
+    narration_trigger.temp_delta_c = cfg.ai_temp_delta_c;
+    narration_trigger.humidity_delta = cfg.ai_humidity_delta;
+    narration_trigger.pressure_delta = cfg.ai_pressure_delta;
+    narration_trigger.warn_temp_c = cfg.ai_warn_temp_c;
+    narration_trigger.warn_humidity = cfg.ai_warn_humidity;
+
     const bool deepseek_active = deepseek.enabled && !deepseek.api_key.empty();
     AIQueryDispatcher ai(
         storage,
         cfg.ollamaUrl(),
         cfg.ollama_model,
-        cfg.ai_trigger_count,
+        narration_trigger,
         cfg.ai_window_size,
         deepseek,
         cfg.ai_enabled,
@@ -78,7 +89,9 @@ int main()
               << (deepseek_active ? "deepseek:" + cfg.deepseek_model
                                   : "ollama:" + cfg.ollama_model)
               << ", fallback=ollama:" << cfg.ollama_model
-              << ", trigger=" << cfg.ai_trigger_count
+              << ", trigger=state-change(cooldown=" << cfg.ai_min_interval_s
+              << "s, dT=" << cfg.ai_temp_delta_c
+              << ", dRH=" << cfg.ai_humidity_delta << ")"
               << ", window=" << cfg.ai_window_size
               << (cfg.ai_enabled ? "" : ", DISABLED") << ")\n";
     if (cfg.deepseek_enabled && cfg.deepseek_api_key.empty())

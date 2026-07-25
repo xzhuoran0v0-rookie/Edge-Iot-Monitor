@@ -64,12 +64,27 @@ filter:
   min_window_samples: 10     # Don't run IQR until this many samples are in the window
 
 # ------------------------------------------------------------
-# AIQueryDispatcher — Trigger Frequency
+# AIQueryDispatcher — Narration Trigger
 # ------------------------------------------------------------
+# The LLM explains state; it never decides alarms. Detection is deterministic
+# (device thresholds + server-side IQR) and has already acted before the model runs.
+#
+# Narration fires only on a state CHANGE, never on a record count. A count-based
+# trigger re-analyses identical steady-state data forever, so the model can only
+# repeat its own input back — and it burns API quota doing it.
 ai:
-  trigger_every_n_records: 20   # Run AI analysis after every N new sensor records
-  max_window_records: 100       # Number of recent records fed into the AI prompt
-  enabled: true                  # Set to false to disable AI calls entirely (for testing)
+  max_window_records: 100        # Number of recent records aggregated into the prompt
+  enabled: true                  # Set to false to disable LLM calls entirely (for testing)
+
+  trigger:
+    min_interval_s: 60           # Cooldown per device. Anomalies and first-report bypass it.
+    temp_delta_c: 2.0            # Drift since the LAST NARRATION (not since the last reading)
+    humidity_delta: 5.0          # %RH
+    pressure_delta: 5.0          # hPa
+    warn_temp_c: 35.0            # Warn-band edge; crossing it in EITHER direction narrates
+    warn_humidity: 80.0          # %RH
+
+  # trigger_every_n_records: removed. Ignored if still present in your config.
 
 # ------------------------------------------------------------
 # Storage — Insert Settings

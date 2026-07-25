@@ -75,10 +75,57 @@ cloud:
     )
 
 
-def request(method: str, path: str, payload=None, headers=None):
+def write_narration_project(tmp: Path) -> None:
+    """Config for the narration-trigger test.
+
+    Both LLM backends point at a dead port on purpose: the call always fails,
+    but the server still logs one "Narrating ... reason:" line per firing, which
+    is what the trigger assertions read. No model or API key is needed.
+    """
+    (tmp / "config").mkdir()
+    (tmp / "sql").mkdir()
+    shutil.copy(ROOT / "sql" / "schema.sql", tmp / "sql" / "schema.sql")
+    (tmp / "config" / "config.yaml").write_text(
+        f"""
+server:
+  host: "127.0.0.1"
+  port: 18081
+sqlite:
+  db_path: "{tmp / 'sensor.db'}"
+ollama:
+  host: "http://127.0.0.1"
+  port: 1
+  timeout_s: 1
+deepseek:
+  enabled: false
+filter:
+  window_seconds: 60
+  iqr_multiplier: 1.5
+  min_window_samples: 10
+ai:
+  enabled: true
+  max_window_records: 40
+  trigger:
+    min_interval_s: 30
+    temp_delta_c: 2.0
+    humidity_delta: 5.0
+    warn_temp_c: 35.0
+    warn_humidity: 80.0
+devices:
+  allowlist:
+    - "esp32s3-001"
+cloud:
+  enabled: false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def request(method: str, path: str, payload=None, headers=None, port: int = 18080):
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        f"http://127.0.0.1:18080{path}",
+        f"http://127.0.0.1:{port}{path}",
         data=data,
         method=method,
         headers={"Content-Type": "application/json", **(headers or {})},
@@ -99,17 +146,83 @@ def assert_response(actual, expected_status: int, expected_status_field: str | N
     return body
 
 
-def wait_for_health(proc: subprocess.Popen, timeout_s: float = 5.0) -> None:
+def wait_for_health(proc: subprocess.Popen, timeout_s: float = 5.0, port: int = 18080) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         if proc.poll() is not None:
             raise RuntimeError(f"server exited early with {proc.returncode}")
         try:
-            assert_response(request("GET", "/health"), 200, "ok")
+            assert_response(request("GET", "/health", port=port), 200, "ok")
             return
         except Exception:
             time.sleep(0.1)
     raise TimeoutError("server did not become healthy")
+
+
+def run_narration_trigger_test(binary: Path) -> None:
+    """The LLM narrates on state CHANGE, never on a record count.
+
+    A count-based trigger re-analysed identical steady-state data forever. This
+    asserts the replacement: silent while nothing changes, one narration when
+    something does.
+
+    Scripted so the count is deterministic:
+      1 baseline  + 12 identical readings (silent)
+      + 1 reading crossing the 35 C warn band (crossing bypasses the cooldown)
+      + 8 identical readings at the new level (silent: crossing is latched, and
+        the IQR anomalies it provokes are held down by the 30 s cooldown)
+      => exactly 2 narrations from 22 ingests.
+    """
+    with tempfile.TemporaryDirectory(prefix="edge-iot-narration-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        write_narration_project(tmp)
+        proc = subprocess.Popen(
+            [str(binary)],
+            cwd=tmp,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            wait_for_health(proc, port=18081)
+
+            def send(temp: float) -> None:
+                assert_response(
+                    request(
+                        "POST",
+                        "/api/ingest",
+                        {"device_id": "esp32s3-001", "temperature": temp, "humidity": 50.0},
+                        port=18081,
+                    ),
+                    200,
+                    "ok",
+                )
+
+            send(22.0)                      # baseline -> narrates
+            for _ in range(12):             # identical readings -> silent
+                send(22.0)
+            send(36.0)                      # crosses 35 C -> narrates
+            for _ in range(8):              # identical at new level -> silent
+                send(36.0)
+            time.sleep(1.0)                 # let the worker drain
+        finally:
+            proc.send_signal(signal.SIGINT)
+            try:
+                out, _ = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, _ = proc.communicate(timeout=5)
+
+    firings = [ln for ln in out.splitlines() if "Narrating" in ln]
+    if len(firings) != 2:
+        raise AssertionError(
+            f"expected exactly 2 narrations from 22 ingests, got {len(firings)}:\n"
+            + "\n".join(firings)
+        )
+    if "first report" not in firings[0]:
+        raise AssertionError(f"first narration should be the baseline, got: {firings[0]}")
+    if "rose above" not in firings[1]:
+        raise AssertionError(f"second narration should be the band crossing, got: {firings[1]}")
 
 
 def parse_args():
@@ -208,7 +321,6 @@ def main() -> int:
             )
 
             print("backend API smoke tests passed")
-            return 0
         finally:
             proc.send_signal(signal.SIGINT)
             try:
@@ -216,6 +328,10 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=3)
+
+    run_narration_trigger_test(binary)
+    print("narration trigger tests passed")
+    return 0
 
 
 if __name__ == "__main__":

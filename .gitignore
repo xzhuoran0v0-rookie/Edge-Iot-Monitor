@@ -39,6 +39,7 @@ esp-idf/
 
 # --- Secrets & local config (never commit real credentials) ---
 config/config.yaml
+config/*.env
 firmware/src/config.h
 firmware/iotda_mvp/src/config.h
 docs/iotda_activation_local.md
