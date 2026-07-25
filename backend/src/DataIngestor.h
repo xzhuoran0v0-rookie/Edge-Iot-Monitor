@@ -112,6 +112,23 @@ private:
                       std::string &respond_json,
                       int &status_code);
 
+    /**
+     * @brief 时间序列查询（只读，供状态页画曲线）
+     *
+     * 返回窗口内每个 sensor_type 的完整点列，外加异常点和叙述发生的时刻 ——
+     * 三者画在同一根时间轴上，才能看出“检测器发现了什么、模型据此说了什么”。
+     *
+     * 和 /api/status 分开是因为轮询频率不同：数字要跟手（2s），
+     * 曲线不需要（5s），没必要每两秒重传整个窗口。
+     *
+     * @param device_id 查询设备（走 allowlist 校验）
+     * @param minutes 回看分钟数（越界时收敛到合法范围）
+     */
+    void handleHistory(const std::string &device_id,
+                       const std::string &minutes,
+                       std::string &respond_json,
+                       int &status_code);
+
     void handleCommandAck(const std::string &raw_json,
                           std::string &respond_json,
                           int &status_code);

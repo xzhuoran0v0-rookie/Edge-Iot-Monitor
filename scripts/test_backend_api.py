@@ -305,12 +305,45 @@ def main() -> int:
             if status_body["narration"] is not None:
                 raise AssertionError(f"expected no narration, got {status_body['narration']}")
 
+            # ---- history endpoint (drives the charts) ----
+            assert_response(request("GET", "/api/history"), 400, "error")
+            assert_response(request("GET", "/api/history?device_id=bad"), 401, "error")
+
+            hist = assert_response(
+                request("GET", "/api/history?device_id=esp32s3-001&minutes=10"), 200, "ok"
+            )
+            by_type = {s["sensor_type"]: s for s in hist["series"]}
+            if sorted(by_type) != ["humidity", "temperature"]:
+                raise AssertionError(f"unexpected series: {list(by_type)}")
+            if not by_type["temperature"]["points"]:
+                raise AssertionError("temperature series is empty")
+            # Points must be time-ascending: the chart draws them in array order.
+            stamps = [p["t"] for p in by_type["temperature"]["points"]]
+            if stamps != sorted(stamps):
+                raise AssertionError(f"points are not time-ascending: {stamps}")
+
+            # A junk window falls back to the default rather than 400 — this is a
+            # dashboard URL, and a bad hand-typed param should not blank the page.
+            junk = assert_response(
+                request("GET", "/api/history?device_id=esp32s3-001&minutes=abc"), 200, "ok"
+            )
+            if junk["window_minutes"] != 10:
+                raise AssertionError(f"bad minutes should fall back to 10, got {junk['window_minutes']}")
+            clamped = assert_response(
+                request("GET", "/api/history?device_id=esp32s3-001&minutes=99999"), 200, "ok"
+            )
+            if clamped["window_minutes"] != 180:
+                raise AssertionError(f"minutes should clamp to 180, got {clamped['window_minutes']}")
+
             page_status, page = request_text("/")
-            if page_status != 200 or "Edge IoT Monitor" not in page:
+            if page_status != 200 or "边缘物联网监测" not in page:
                 raise AssertionError(f"status page did not render (HTTP {page_status})")
-            # Self-contained: no CDN, no external stylesheet, nothing to fetch.
-            for external in ("http://", "https://", "<link", "src="):
-                if external in page:
+            # Self-contained: no CDN, no external stylesheet, nothing to fetch at
+            # render time. The SVG namespace URI is a declaration, not a request,
+            # so it is stripped before the check rather than weakening it.
+            probe = page.replace("http://www.w3.org/2000/svg", "")
+            for external in ("http://", "https://", "<link", "src=", "@import", "url("):
+                if external in probe:
                     raise AssertionError(f"status page references external asset: {external}")
 
             assert_response(

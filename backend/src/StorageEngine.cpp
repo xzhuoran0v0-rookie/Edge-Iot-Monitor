@@ -1,4 +1,5 @@
 #include "StorageEngine.h"
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -282,6 +283,80 @@ std::vector<SensorReading> StorageEngine::getRecentAnomalies(
         r.server_timestamp = r.timestamp;
 
         results.push_back(r);
+    }
+
+    sqlite3_finalize(stmt);
+    return results;
+}
+
+/**
+ * @brief 时间窗口内的读数，按时间升序
+ *
+ * 先按 id DESC 取最近 max_rows 行再反转，而不是直接 ASC LIMIT ——
+ * 后者在窗口内数据超过上限时会返回最旧的一段，页面就会停在过去不动。
+ */
+std::vector<SensorReading> StorageEngine::getReadingsSince(
+    const std::string &device_id, const std::string &since_iso, int max_rows)
+{
+    std::vector<SensorReading> results;
+
+    static constexpr const char *kSql =
+        "SELECT device_id, sensor_type, value, unit, timestamp "
+        "FROM sensor_readings WHERE device_id = ? AND timestamp >= ? "
+        "ORDER BY id DESC LIMIT ?;";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+        return results;
+
+    sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, since_iso.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, max_rows);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        SensorReading r;
+        r.device_id = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+        r.sensor_type = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        r.value = sqlite3_column_double(stmt, 2);
+        if (const auto *unit = sqlite3_column_text(stmt, 3))
+            r.unit = reinterpret_cast<const char *>(unit);
+        r.timestamp = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 4));
+        r.server_timestamp = r.timestamp;
+
+        results.push_back(r);
+    }
+
+    sqlite3_finalize(stmt);
+
+    std::reverse(results.begin(), results.end());
+    return results;
+}
+
+/** 最近若干次叙述（不取 prompt） */
+std::vector<AnalysisRecord> StorageEngine::getRecentAnalyses(
+    const std::string &device_id, int limit)
+{
+    std::vector<AnalysisRecord> results;
+
+    static constexpr const char *kSql =
+        "SELECT response, timestamp FROM analysis_log "
+        "WHERE device_id = ? ORDER BY id DESC LIMIT ?;";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+        return results;
+
+    sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, limit);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        AnalysisRecord a;
+        if (const auto *resp = sqlite3_column_text(stmt, 0))
+            a.response = reinterpret_cast<const char *>(resp);
+        a.timestamp = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        results.push_back(a);
     }
 
     sqlite3_finalize(stmt);

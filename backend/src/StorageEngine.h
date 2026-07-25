@@ -129,6 +129,33 @@ public:
                                                   int limit);
 
     /**
+     * @brief 某时间点之后的全部读数（供状态页画曲线）
+     *
+     * 时间戳是 ISO8601 + 'Z' 定长字符串，字典序等价于时间序，因此可以直接用
+     * 字符串比较做时间窗口，不需要 SQLite 的日期函数。
+     *
+     * @param device_id 设备ID
+     * @param since_iso 起始时间（ISO8601 + 'Z'），含该时刻
+     * @param max_rows 行数上限（防止长时间运行后一次拉回整库）
+     * @return 按时间升序（画图直接可用，不需要前端再排）
+     */
+    std::vector<SensorReading> getReadingsSince(const std::string &device_id,
+                                                const std::string &since_iso,
+                                                int max_rows);
+
+    /**
+     * @brief 最近若干次 AI 叙述
+     *
+     * 状态页用它在时间轴上标出“模型在这里说过话”。
+     *
+     * @param device_id 设备ID
+     * @param limit 返回数量上限
+     * @return 按时间倒序
+     */
+    std::vector<AnalysisRecord> getRecentAnalyses(const std::string &device_id,
+                                                  int limit);
+
+    /**
      * @brief 写入 AI 分析结果
      *
      * @param device_id 设备ID

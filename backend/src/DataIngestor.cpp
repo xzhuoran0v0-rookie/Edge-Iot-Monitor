@@ -13,11 +13,20 @@
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+#include <unordered_map>
 
 using json = nlohmann::json;
 
-/// /api/status 返回的异常事件条数上限（页面每 2s 轮询一次，别让响应无限增长）
-static constexpr int kStatusAnomalyLimit = 20;
+/// /api/history 默认回看窗口（分钟）
+static constexpr int kHistoryDefaultMinutes = 10;
+/// /api/history 允许的最大回看窗口
+static constexpr int kHistoryMaxMinutes = 180;
+/// 单次 /api/history 返回的最大读数行数（所有 sensor_type 合计）
+static constexpr int kHistoryMaxRows = 3000;
+/// /api/history 返回的异常点上限
+static constexpr int kHistoryAnomalyLimit = 100;
+/// /api/history 返回的叙述标记上限
+static constexpr int kHistoryNarrationLimit = 50;
 
 static std::string makeError(const std::string &message)
 {
@@ -40,6 +49,30 @@ static std::string nowISo8601()
 {
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
+
+    std::tm utc_tm{};
+#ifdef _WIN32
+    gmtime_s(&utc_tm, &t);
+#else
+    gmtime_r(&t, &utc_tm);
+#endif
+
+    std::ostringstream ss;
+    ss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
+
+    return ss.str();
+}
+
+/**
+ * @brief N 分钟前的 UTC 时间戳（ISO8601 + 'Z'）
+ *
+ * 和 nowISo8601 用同一种格式 —— 时间窗口是靠字符串比较实现的，
+ * 两边格式必须逐字符一致，否则比较结果没有意义。
+ */
+static std::string isoMinutesAgo(int minutes)
+{
+    auto point = std::chrono::system_clock::now() - std::chrono::minutes(minutes);
+    auto t = std::chrono::system_clock::to_time_t(point);
 
     std::tm utc_tm{};
 #ifdef _WIN32
@@ -179,6 +212,19 @@ bool DataIngestor::start(const std::string &host,
                 std::string response;
                 int status = 200;
                 handleStatus(req.get_param_value("device_id"), response, status);
+                res.status = status;
+                res.set_header("Cache-Control", "no-store");
+                res.set_content(response, "application/json");
+            });
+
+    svr.Get("/api/history",
+            [this](const httplib::Request &req, httplib::Response &res)
+            {
+                std::string response;
+                int status = 200;
+                handleHistory(req.get_param_value("device_id"),
+                              req.get_param_value("minutes"),
+                              response, status);
                 res.status = status;
                 res.set_header("Cache-Control", "no-store");
                 res.set_content(response, "application/json");
@@ -467,11 +513,12 @@ void DataIngestor::handleStatus(const std::string &device_id,
         return;
     }
 
+    // 异常点属于时间序列，只在 /api/history 里返回 —— 同一份数据出现在两个
+    // 接口，早晚会各改一个。
     json body = {
         {"status", "ok"},
         {"device_id", device_id},
         {"readings", json::array()},
-        {"anomalies", json::array()},
         {"narration", nullptr},
     };
 
@@ -482,15 +529,6 @@ void DataIngestor::handleStatus(const std::string &device_id,
             {"value", r.value},
             {"unit", r.unit},
             {"timestamp", r.timestamp},
-        });
-    }
-
-    for (const auto &a : storage_.getRecentAnomalies(device_id, kStatusAnomalyLimit))
-    {
-        body["anomalies"].push_back({
-            {"sensor_type", a.sensor_type},
-            {"value", a.value},
-            {"timestamp", a.timestamp},
         });
     }
 
@@ -515,6 +553,113 @@ void DataIngestor::handleStatus(const std::string &device_id,
         }
 
         body["narration"] = std::move(narration);
+    }
+
+    status_code = 200;
+    response_json = body.dump();
+}
+
+void DataIngestor::handleHistory(const std::string &device_id,
+                                 const std::string &minutes_param,
+                                 std::string &response_json,
+                                 int &status_code)
+{
+    if (device_id.empty())
+    {
+        status_code = 400;
+        response_json = makeError("device_id is required");
+        return;
+    }
+    if (!isDeviceAllowed(device_id))
+    {
+        status_code = 401;
+        response_json = makeError("device not authorized");
+        return;
+    }
+
+    // 参数非法就退回默认值，不返回 400：这是个看板接口，URL 里手输一个坏
+    // 参数不该让整页空白。
+    int minutes = kHistoryDefaultMinutes;
+    if (!minutes_param.empty())
+    {
+        try
+        {
+            minutes = std::stoi(minutes_param);
+        }
+        catch (const std::exception &)
+        {
+            minutes = kHistoryDefaultMinutes;
+        }
+    }
+    minutes = std::max(1, std::min(minutes, kHistoryMaxMinutes));
+
+    const std::string since = isoMinutesAgo(minutes);
+
+    json body = {
+        {"status", "ok"},
+        {"device_id", device_id},
+        {"window_minutes", minutes},
+        {"since", since},
+        {"series", json::array()},
+        {"anomalies", json::array()},
+        {"narrations", json::array()},
+    };
+
+    // 按 sensor_type 分组。用 vector 而不是 map 保持插入顺序稳定，
+    // 前端每次拿到的序列顺序一致，图表不会来回跳。
+    std::vector<std::string> order;
+    std::unordered_map<std::string, json> series;
+    std::unordered_map<std::string, std::string> units;
+
+    for (const auto &r : storage_.getReadingsSince(device_id, since, kHistoryMaxRows))
+    {
+        if (series.find(r.sensor_type) == series.end())
+        {
+            order.push_back(r.sensor_type);
+            series[r.sensor_type] = json::array();
+        }
+        if (!r.unit.empty())
+            units[r.sensor_type] = r.unit;
+
+        series[r.sensor_type].push_back({{"t", r.timestamp}, {"v", r.value}});
+    }
+
+    for (const auto &type : order)
+    {
+        body["series"].push_back({
+            {"sensor_type", type},
+            {"unit", units.count(type) ? units[type] : ""},
+            {"points", series[type]},
+        });
+    }
+
+    for (const auto &a : storage_.getRecentAnomalies(device_id, kHistoryAnomalyLimit))
+    {
+        // 窗口外的异常点画不上去，直接不传。
+        if (a.timestamp < since)
+            continue;
+        body["anomalies"].push_back({
+            {"sensor_type", a.sensor_type},
+            {"value", a.value},
+            {"timestamp", a.timestamp},
+        });
+    }
+
+    for (const auto &rec : storage_.getRecentAnalyses(device_id, kHistoryNarrationLimit))
+    {
+        if (rec.timestamp < since)
+            continue;
+
+        json mark = {{"timestamp", rec.timestamp}, {"verdict", ""}, {"severity", ""}};
+
+        json fields;
+        if (tryParseNarration(rec.response, fields))
+        {
+            mark["verdict"] = fieldOrEmpty(fields, "verdict");
+            mark["severity"] = fieldOrEmpty(fields, "severity");
+        }
+
+        body["narrations"].push_back(std::move(mark));
     }
 
     status_code = 200;
