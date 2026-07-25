@@ -260,8 +260,8 @@ void DataIngestor::handleIngest(const std::string &raw_json,
         }
     }
 
-    // 4.AI分析
-    ai_.onNewData(readings);
+    // 4.AI 叙述（稳态下 onNewData 内部直接返回，不产生 LLM 调用）
+    ai_.onNewData(readings, has_anomaly);
 
     // 5.云同步
     cloud_.onNewData(readings);

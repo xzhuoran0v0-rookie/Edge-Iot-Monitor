@@ -41,9 +41,17 @@ struct AppConfig
     int filter_min_samples = 10;
 
     // ---- ai dispatcher ----
-    int ai_trigger_count = 20;
     int ai_window_size = 100;
     bool ai_enabled = true;
+
+    // ---- ai narration trigger（状态变化触发，取代旧的 ai.trigger_count） ----
+    // 旧的按条数触发会在环境稳定时反复分析同一批数据，产出没有信息量。
+    int ai_min_interval_s = 60;      ///< 同一设备两次叙述的最小间隔（秒）
+    double ai_temp_delta_c = 2.0;    ///< 温度漂移触发阈值
+    double ai_humidity_delta = 5.0;  ///< 湿度漂移触发阈值（%RH）
+    double ai_pressure_delta = 5.0;  ///< 气压漂移触发阈值（hPa）
+    double ai_warn_temp_c = 35.0;    ///< 温度告警带边界（跨越即触发）
+    double ai_warn_humidity = 80.0;  ///< 湿度告警带边界（%RH）
 
     // ---- validation ----
     double temp_min = -40.0;

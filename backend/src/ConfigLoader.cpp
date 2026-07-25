@@ -87,9 +87,19 @@ AppConfig loadConfig(const std::string &path)
         if (root["ai"])
         {
             auto a = root["ai"];
-            if (a["trigger_every_n_records"]) cfg.ai_trigger_count = a["trigger_every_n_records"].as<int>();
             if (a["max_window_records"])      cfg.ai_window_size = a["max_window_records"].as<int>();
             if (a["enabled"])                 cfg.ai_enabled = a["enabled"].as<bool>();
+
+            // 状态变化触发（ai.trigger_every_n_records 已废弃，读到也忽略）
+            if (auto t = a["trigger"])
+            {
+                if (t["min_interval_s"])  cfg.ai_min_interval_s = t["min_interval_s"].as<int>();
+                if (t["temp_delta_c"])    cfg.ai_temp_delta_c = t["temp_delta_c"].as<double>();
+                if (t["humidity_delta"])  cfg.ai_humidity_delta = t["humidity_delta"].as<double>();
+                if (t["pressure_delta"])  cfg.ai_pressure_delta = t["pressure_delta"].as<double>();
+                if (t["warn_temp_c"])     cfg.ai_warn_temp_c = t["warn_temp_c"].as<double>();
+                if (t["warn_humidity"])   cfg.ai_warn_humidity = t["warn_humidity"].as<double>();
+            }
         }
 
         // ---- validation ----
