@@ -44,7 +44,6 @@ public:
         CloudSync &cloud,
         double temp_min = -40.0, double temp_max = 85.0,
         double hum_min = 0.0, double hum_max = 100.0,
-        double pressure_min = 800.0, double pressure_max = 1200.0,
         std::vector<std::string> allowlist = {},
         std::string command_api_key = "");
 
@@ -109,7 +108,7 @@ private:
      * @brief 解析JSON数据
      *
      * @param raw_json 原始JSON数据
-     * @param out_readings 输出：拆分后的多条读数（temperature/humidity/pressure）
+     * @param out_readings 输出：拆分后的多条读数（temperature/humidity）
      * @param error_msg 失败返回错误信息
      *
      * @return 是否解析成功
@@ -142,7 +141,6 @@ private:
     //=========== 校验范围（来自 AppConfig）============//
     double temp_min_, temp_max_;
     double hum_min_,  hum_max_;
-    double pressure_min_, pressure_max_;
     std::vector<std::string> allowlist_;
     std::string command_api_key_;
 

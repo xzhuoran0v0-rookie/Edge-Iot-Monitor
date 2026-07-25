@@ -64,9 +64,6 @@ validation:
   humidity:
     min: 0.0
     max: 100.0
-  pressure:
-    min: 800.0
-    max: 1200.0
 cloud:
   enabled: false
 """.strip()
@@ -262,11 +259,16 @@ def main() -> int:
                 401,
                 "error",
             )
+            # The hardware is SHT30 only — there is no pressure sensor. A payload
+            # carrying nothing but pressure has no recognised field and is
+            # rejected rather than stored under a sensor type nothing produces.
             assert_response(
                 request("POST", "/api/ingest", {"device_id": "esp32s3-001", "pressure": 1013.2}),
-                200,
-                "ok",
+                400,
+                "error",
             )
+            # Unrecognised fields alongside real ones are ignored, not fatal:
+            # a future firmware may send extra keys this backend does not know.
             assert_response(
                 request(
                     "POST",

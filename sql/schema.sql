@@ -4,8 +4,9 @@
 -- This schema matches `backend/src/StorageEngine.cpp` (tables + column names).
 --
 -- Data model:
--- - Each incoming JSON reading is split into multiple rows (temperature/humidity/pressure)
+-- - Each incoming JSON reading is split into one row per quantity (temperature/humidity)
 -- - Stored as: (device_id, sensor_type, value, unit, timestamp)
+-- - sensor_type is a free-form string, so adding a sensor needs no schema change
 --
 -- Use `scripts/simulate_sensor.py --stdout` + `backend/src/ingest_stdin.cpp`
 -- to test inserts quickly without an HTTP server.

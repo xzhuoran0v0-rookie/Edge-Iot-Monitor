@@ -12,7 +12,7 @@ static void usage(const char *argv0)
     std::cerr
         << "Usage: " << argv0 << " [--db <path>]\n"
         << "Reads one JSON object per line from stdin (simulate_sensor.py --stdout).\n"
-        << "Expected keys: device_id, timestamp, temperature, humidity, (optional) pressure.\n";
+        << "Expected keys: device_id, timestamp, temperature, humidity.\n";
 }
 
 static bool insertMetric(StorageEngine &engine,
@@ -127,21 +127,6 @@ int main(int argc, char **argv)
         bool ok = true;
         ok = ok && insertMetric(engine, deviceId, timestamp, "temperature", temp, "C");
         ok = ok && insertMetric(engine, deviceId, timestamp, "humidity", hum, "%");
-
-        if (payload.contains("pressure"))
-        {
-            try
-            {
-                const double pres = payload.at("pressure").get<double>();
-                ok = ok && insertMetric(engine, deviceId, timestamp, "pressure", pres, "hPa");
-            }
-            catch (const std::exception &e)
-            {
-                std::cerr << "Skipping line (bad pressure field: " << e.what() << "): " << line << "\n";
-                failCount++;
-                continue;
-            }
-        }
 
         if (ok)
             okCount++;

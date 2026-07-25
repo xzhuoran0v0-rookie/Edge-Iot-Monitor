@@ -40,7 +40,6 @@ struct NarrationTriggerConfig
     int min_interval_s = 60;     ///< 同一设备两次叙述的最小间隔（防抖 + 控制成本）
     double temp_delta_c = 2.0;   ///< 温度较上次叙述漂移超过该值即触发
     double humidity_delta = 5.0; ///< 湿度漂移阈值（%RH）
-    double pressure_delta = 5.0; ///< 气压漂移阈值（hPa）
     double warn_temp_c = 35.0;   ///< 温度告警带边界（进入或离开都算状态变化）
     double warn_humidity = 80.0; ///< 湿度告警带边界（%RH）
 };

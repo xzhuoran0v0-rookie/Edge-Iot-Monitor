@@ -80,7 +80,6 @@ ai:
     min_interval_s: 60           # Cooldown per device. Anomalies and first-report bypass it.
     temp_delta_c: 2.0            # Drift since the LAST NARRATION (not since the last reading)
     humidity_delta: 5.0          # %RH
-    pressure_delta: 5.0          # hPa
     warn_temp_c: 35.0            # Warn-band edge; crossing it in EITHER direction narrates
     warn_humidity: 80.0          # %RH
 
@@ -118,6 +117,10 @@ security:
 # ------------------------------------------------------------
 # Sensor Validation — Acceptable Data Ranges
 # Readings outside these ranges are rejected with HTTP 400.
+#
+# Only the quantities the SHT30 actually measures are accepted. Any other
+# field in the payload is ignored; a payload with no recognised field is
+# rejected rather than silently stored.
 # ------------------------------------------------------------
 validation:
   temperature:
@@ -126,9 +129,6 @@ validation:
   humidity:
     min: 0.0                 # Minimum valid relative humidity (%)
     max: 100.0               # Maximum valid relative humidity (%)
-  pressure:
-    min: 800.0               # Minimum valid pressure (hPa) — optional field
-    max: 1200.0              # Maximum valid pressure (hPa) — optional field
 
 # ------------------------------------------------------------
 # Logging

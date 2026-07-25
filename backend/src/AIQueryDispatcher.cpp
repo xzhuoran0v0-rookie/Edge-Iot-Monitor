@@ -201,8 +201,6 @@ bool AIQueryDispatcher::driftThresholdFor(const std::string &sensor_type,
         out = trigger_.temp_delta_c;
     else if (sensor_type == "humidity")
         out = trigger_.humidity_delta;
-    else if (sensor_type == "pressure")
-        out = trigger_.pressure_delta;
     else
         return false;
     return true;

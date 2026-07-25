@@ -85,13 +85,11 @@ DataIngestor::DataIngestor(
     CloudSync &cloud,
     double temp_min, double temp_max,
     double hum_min,  double hum_max,
-    double pressure_min, double pressure_max,
     std::vector<std::string> allowlist,
     std::string command_api_key)
     : storage_(storage), filter_(filter), ai_(ai), cloud_(cloud)
     , temp_min_(temp_min), temp_max_(temp_max)
     , hum_min_(hum_min),   hum_max_(hum_max)
-    , pressure_min_(pressure_min), pressure_max_(pressure_max)
     , allowlist_(std::move(allowlist))
     , command_api_key_(std::move(command_api_key))
     , impl_(std::make_unique<Impl>())
@@ -440,7 +438,8 @@ void DataIngestor::handleCommandAck(const std::string &raw_json,
  *
  * 设计说明：
  * - 将不同传感器拆分为统一结构
- * - 支持未来扩展(pressure等)
+ * - 只解析硬件真实存在的量（SHT30：temperature/humidity）；
+ *   其余字段忽略，全部忽略时按 "no supported sensor fields" 拒绝
  * - 同时生成：
  *       device_timestamp(设备时间)
  *       server_timestamp(UTC权威时间)
@@ -516,21 +515,6 @@ bool DataIngestor::parseJson(const std::string &raw,
 
             out.push_back(h);
         }
-        if (j.contains("pressure"))
-        {
-            SensorReading p;
-
-            p.device_id = device_id;
-            p.sensor_type = "pressure";
-            p.value = j.at("pressure").get<double>();
-            p.unit = "hPa";
-
-            p.device_timestamp = device_ts;
-            p.server_timestamp = server_ts;
-            p.timestamp = server_ts;
-
-            out.push_back(p);
-        }
         if (out.empty())
         {
             error_msg = "no supported sensor fields";
@@ -592,14 +576,6 @@ bool DataIngestor::validate(const std::vector<SensorReading> &readings,
         else if(r.sensor_type=="humidity"){
             if(r.value < hum_min_ || r.value > hum_max_){
                 error_msg="humidity is out of the range";
-                return false;
-            }
-        }
-        else if (r.sensor_type == "pressure")
-        {
-            if (r.value < pressure_min_ || r.value > pressure_max_)
-            {
-                error_msg = "pressure is out of the range";
                 return false;
             }
         }
