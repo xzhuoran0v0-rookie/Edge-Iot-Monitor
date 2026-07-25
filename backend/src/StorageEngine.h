@@ -25,6 +25,17 @@ struct SensorReading
     std::string device_timestamp;
 };
 
+/**
+ * @brief 一条 AI 叙述记录（analysis_log 的一行，不含 prompt）
+ *
+ * 状态页只需要模型说了什么和什么时候说的；prompt 体积大且对前端无用。
+ */
+struct AnalysisRecord
+{
+    std::string response;
+    std::string timestamp;
+};
+
 struct DeviceCommand
 {
     int id = 0;
@@ -86,6 +97,36 @@ public:
      * @return 数据列表(按时间排列)
      */
     std::vector<SensorReading> getRecentReadings(const std::string &device_id, int limit);
+
+    /**
+     * @brief 每个 sensor_type 的最新一条读数
+     *
+     * 状态页要展示“现在是多少”，而不是最近 N 条里混在一起的多种量纲 ——
+     * getRecentReadings(limit) 做不到这件事：温度更新频繁时会把湿度挤出窗口。
+     *
+     * @param device_id 设备ID
+     * @return 每种 sensor_type 各一条，按 sensor_type 排序
+     */
+    std::vector<SensorReading> getLatestPerSensor(const std::string &device_id);
+
+    /**
+     * @brief 最近一次 AI 叙述
+     *
+     * @param device_id 设备ID
+     * @param out 输出：命中时填充
+     * @return 是否存在记录（该设备还没跑过叙述时返回 false）
+     */
+    bool getLatestAnalysis(const std::string &device_id, AnalysisRecord &out);
+
+    /**
+     * @brief 最近的异常事件
+     *
+     * @param device_id 设备ID
+     * @param limit 返回数量上限
+     * @return 按时间倒序；unit 字段为空（anomaly_events 不存单位）
+     */
+    std::vector<SensorReading> getRecentAnomalies(const std::string &device_id,
+                                                  int limit);
 
     /**
      * @brief 写入 AI 分析结果

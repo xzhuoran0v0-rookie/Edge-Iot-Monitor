@@ -134,6 +134,16 @@ def request(method: str, path: str, payload=None, headers=None, port: int = 1808
         return exc.code, json.loads(exc.read().decode("utf-8"))
 
 
+def request_text(path: str, port: int = 18080):
+    """Fetch a non-JSON response (the status page) as text."""
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8")
+
+
 def assert_response(actual, expected_status: int, expected_status_field: str | None = None):
     status, body = actual
     if status != expected_status:
@@ -278,6 +288,31 @@ def main() -> int:
                 200,
                 "ok",
             )
+            # ---- read-only status endpoint ----
+            assert_response(request("GET", "/api/status"), 400, "error")
+            assert_response(request("GET", "/api/status?device_id=bad"), 401, "error")
+
+            status_body = assert_response(
+                request("GET", "/api/status?device_id=esp32s3-001"), 200, "ok"
+            )
+            latest = {r["sensor_type"]: r for r in status_body["readings"]}
+            # One row per sensor_type, not the raw recent-N window.
+            if sorted(latest) != ["humidity", "temperature"]:
+                raise AssertionError(f"expected one row per sensor type, got {status_body['readings']}")
+            if latest["temperature"]["value"] != 24.2 or latest["temperature"]["unit"] != "C":
+                raise AssertionError(f"unexpected temperature row: {latest['temperature']}")
+            # ai.enabled is false in this config, so nothing should have narrated.
+            if status_body["narration"] is not None:
+                raise AssertionError(f"expected no narration, got {status_body['narration']}")
+
+            page_status, page = request_text("/")
+            if page_status != 200 or "Edge IoT Monitor" not in page:
+                raise AssertionError(f"status page did not render (HTTP {page_status})")
+            # Self-contained: no CDN, no external stylesheet, nothing to fetch.
+            for external in ("http://", "https://", "<link", "src="):
+                if external in page:
+                    raise AssertionError(f"status page references external asset: {external}")
+
             assert_response(
                 request(
                     "POST",

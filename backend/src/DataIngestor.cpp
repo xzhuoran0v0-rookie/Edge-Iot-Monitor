@@ -2,6 +2,7 @@
 #include "DataFilter.h"
 #include "AIQueryDispatcher.h"
 #include "CloudSync.h"
+#include "StatusPage.h"
 
 #include "httplib.h"
 #include "nlohmann/json.hpp"
@@ -14,6 +15,9 @@
 #include <algorithm>
 
 using json = nlohmann::json;
+
+/// /api/status 返回的异常事件条数上限（页面每 2s 轮询一次，别让响应无限增长）
+static constexpr int kStatusAnomalyLimit = 20;
 
 static std::string makeError(const std::string &message)
 {
@@ -109,7 +113,7 @@ DataIngestor::~DataIngestor() = default;
  * @brief 启动HTTP服务器(阻塞调用)
  *
  * 功能：
- * - 注册路由(/health,/api/ingest)
+ * - 注册路由(/health,/api/ingest,/api/status,/)
  * - 监听端口并进入事件循环
  *
  * 设计说明：
@@ -167,6 +171,21 @@ bool DataIngestor::start(const std::string &host,
                 res.status = status;
                 res.set_content(response, "application/json");
             });
+
+    // 只读状态查询 + 状态页。两者都不写库、不触发推理。
+    svr.Get("/api/status",
+            [this](const httplib::Request &req, httplib::Response &res)
+            {
+                std::string response;
+                int status = 200;
+                handleStatus(req.get_param_value("device_id"), response, status);
+                res.status = status;
+                res.set_header("Cache-Control", "no-store");
+                res.set_content(response, "application/json");
+            });
+
+    svr.Get("/", [](const httplib::Request &, httplib::Response &res)
+            { res.set_content(kStatusPageHtml, "text/html; charset=utf-8"); });
 
     svr.Post("/api/commands/ack",
              [this](const httplib::Request &req, httplib::Response &res)
@@ -379,6 +398,127 @@ void DataIngestor::handleNextCommand(const std::string &device_id,
         {"command", command.command},
         {"duration_ms", command.duration_ms}
     }).dump();
+}
+
+namespace
+{
+
+/**
+ * @brief 尝试把模型输出解析成 JSON 对象
+ *
+ * 模型经常把 JSON 包在 ```json ... ``` 里，或在前后加一句解释。
+ * 这里先剥掉围栏、再截取最外层的 {}，仍然失败就交给前端按原文显示 ——
+ * 解析失败是要看见的事实，不该被藏起来。
+ *
+ * @param raw 模型原始输出
+ * @param out 输出：解析成功时填充
+ * @return 是否解析出一个 JSON 对象
+ */
+bool tryParseNarration(const std::string &raw, json &out)
+{
+    const auto begin = raw.find('{');
+    const auto end = raw.rfind('}');
+    if (begin == std::string::npos || end == std::string::npos || end <= begin)
+        return false;
+
+    try
+    {
+        auto parsed = json::parse(raw.substr(begin, end - begin + 1));
+        if (!parsed.is_object())
+            return false;
+        out = std::move(parsed);
+        return true;
+    }
+    catch (const std::exception &)
+    {
+        return false;
+    }
+}
+
+/** 取字符串字段；缺失或类型不符返回空串（模型输出不可信，不做断言） */
+std::string fieldOrEmpty(const json &j, const char *key)
+{
+    if (!j.contains(key))
+        return "";
+    const auto &v = j.at(key);
+    if (v.is_string())
+        return v.get<std::string>();
+    if (v.is_number() || v.is_boolean())
+        return v.dump();
+    return "";
+}
+
+} // namespace
+
+void DataIngestor::handleStatus(const std::string &device_id,
+                                std::string &response_json,
+                                int &status_code)
+{
+    if (device_id.empty())
+    {
+        status_code = 400;
+        response_json = makeError("device_id is required");
+        return;
+    }
+    if (!isDeviceAllowed(device_id))
+    {
+        status_code = 401;
+        response_json = makeError("device not authorized");
+        return;
+    }
+
+    json body = {
+        {"status", "ok"},
+        {"device_id", device_id},
+        {"readings", json::array()},
+        {"anomalies", json::array()},
+        {"narration", nullptr},
+    };
+
+    for (const auto &r : storage_.getLatestPerSensor(device_id))
+    {
+        body["readings"].push_back({
+            {"sensor_type", r.sensor_type},
+            {"value", r.value},
+            {"unit", r.unit},
+            {"timestamp", r.timestamp},
+        });
+    }
+
+    for (const auto &a : storage_.getRecentAnomalies(device_id, kStatusAnomalyLimit))
+    {
+        body["anomalies"].push_back({
+            {"sensor_type", a.sensor_type},
+            {"value", a.value},
+            {"timestamp", a.timestamp},
+        });
+    }
+
+    AnalysisRecord analysis;
+    if (storage_.getLatestAnalysis(device_id, analysis))
+    {
+        json narration = {
+            {"timestamp", analysis.timestamp},
+            {"raw", analysis.response},
+            {"parsed", false},
+        };
+
+        json fields;
+        if (tryParseNarration(analysis.response, fields))
+        {
+            narration["parsed"] = true;
+            narration["situation"] = fieldOrEmpty(fields, "situation");
+            narration["severity"] = fieldOrEmpty(fields, "severity");
+            narration["explanation"] = fieldOrEmpty(fields, "explanation");
+            narration["suggested_action"] = fieldOrEmpty(fields, "suggested_action");
+            narration["verdict"] = fieldOrEmpty(fields, "verdict");
+        }
+
+        body["narration"] = std::move(narration);
+    }
+
+    status_code = 200;
+    response_json = body.dump();
 }
 
 void DataIngestor::handleCommandAck(const std::string &raw_json,

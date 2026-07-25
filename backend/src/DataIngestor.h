@@ -100,6 +100,18 @@ private:
                            std::string &respond_json,
                            int &status_code);
 
+    /**
+     * @brief 状态查询（只读，供状态页轮询）
+     *
+     * 返回：每种 sensor_type 的最新值、最近一次 AI 叙述、最近的异常事件。
+     * 不接受任何写操作，也不触发推理 —— 打开页面不该产生 API 费用。
+     *
+     * @param device_id 查询设备（走 allowlist 校验）
+     */
+    void handleStatus(const std::string &device_id,
+                      std::string &respond_json,
+                      int &status_code);
+
     void handleCommandAck(const std::string &raw_json,
                           std::string &respond_json,
                           int &status_code);

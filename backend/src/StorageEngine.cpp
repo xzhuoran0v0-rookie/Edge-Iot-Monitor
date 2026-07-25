@@ -182,6 +182,113 @@ std::vector<SensorReading> StorageEngine::getRecentReadings(
 }
 
 /**
+ * @brief 每个 sensor_type 取最新一条
+ *
+ * 用 id 而不是 timestamp 选“最新”：timestamp 是秒级字符串，同一批上报的
+ * 温度和湿度时间戳完全相同，按时间取最大会产生并列。id 自增，永远唯一。
+ */
+std::vector<SensorReading> StorageEngine::getLatestPerSensor(
+    const std::string &device_id)
+{
+    std::vector<SensorReading> results;
+
+    static constexpr const char *kSql =
+        "SELECT device_id, sensor_type, value, unit, timestamp "
+        "FROM sensor_readings "
+        "WHERE id IN (SELECT MAX(id) FROM sensor_readings "
+        "             WHERE device_id = ? GROUP BY sensor_type) "
+        "ORDER BY sensor_type;";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+        return results;
+
+    sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        SensorReading r;
+        r.device_id = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+        r.sensor_type = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        r.value = sqlite3_column_double(stmt, 2);
+
+        // unit 可为 NULL（列定义没有 NOT NULL）——直接 reinterpret_cast 会构造
+        // 一个 nullptr std::string，运行时崩溃。
+        if (const auto *unit = sqlite3_column_text(stmt, 3))
+            r.unit = reinterpret_cast<const char *>(unit);
+
+        r.timestamp = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 4));
+        r.server_timestamp = r.timestamp;
+
+        results.push_back(r);
+    }
+
+    sqlite3_finalize(stmt);
+    return results;
+}
+
+/** 最近一次叙述（不取 prompt：体积大，前端用不上） */
+bool StorageEngine::getLatestAnalysis(const std::string &device_id,
+                                      AnalysisRecord &out)
+{
+    static constexpr const char *kSql =
+        "SELECT response, timestamp FROM analysis_log "
+        "WHERE device_id = ? ORDER BY id DESC LIMIT 1;";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    bool found = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        if (const auto *resp = sqlite3_column_text(stmt, 0))
+            out.response = reinterpret_cast<const char *>(resp);
+        out.timestamp = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        found = true;
+    }
+
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+/** 最近的 IQR 异常事件（anomaly_events 不存 unit，留空） */
+std::vector<SensorReading> StorageEngine::getRecentAnomalies(
+    const std::string &device_id, int limit)
+{
+    std::vector<SensorReading> results;
+
+    static constexpr const char *kSql =
+        "SELECT device_id, sensor_type, value, timestamp "
+        "FROM anomaly_events WHERE device_id = ? "
+        "ORDER BY id DESC LIMIT ?;";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+        return results;
+
+    sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, limit);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+    {
+        SensorReading r;
+        r.device_id = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+        r.sensor_type = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        r.value = sqlite3_column_double(stmt, 2);
+        r.timestamp = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 3));
+        r.server_timestamp = r.timestamp;
+
+        results.push_back(r);
+    }
+
+    sqlite3_finalize(stmt);
+    return results;
+}
+
+/**
  * @brief 执行通用 SQL（无返回结果）
  *
  * @param sql SQL 语句
