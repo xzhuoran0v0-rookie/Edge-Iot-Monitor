@@ -68,7 +68,6 @@ int main(int argc, char **argv)
     narration_trigger.min_interval_s = cfg.ai_min_interval_s;
     narration_trigger.temp_delta_c = cfg.ai_temp_delta_c;
     narration_trigger.humidity_delta = cfg.ai_humidity_delta;
-    narration_trigger.pressure_delta = cfg.ai_pressure_delta;
     narration_trigger.warn_temp_c = cfg.ai_warn_temp_c;
     narration_trigger.warn_humidity = cfg.ai_warn_humidity;
 
@@ -117,7 +116,6 @@ int main(int argc, char **argv)
     DataIngestor ingestor(storage, filter, ai, cloud,
                            cfg.temp_min, cfg.temp_max,
                            cfg.hum_min,  cfg.hum_max,
-                           cfg.pressure_min, cfg.pressure_max,
                            cfg.device_allowlist,
                            cfg.command_api_key);
     g_ingestor = &ingestor;

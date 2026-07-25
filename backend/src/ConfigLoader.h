@@ -49,7 +49,6 @@ struct AppConfig
     int ai_min_interval_s = 60;      ///< 同一设备两次叙述的最小间隔（秒）
     double ai_temp_delta_c = 2.0;    ///< 温度漂移触发阈值
     double ai_humidity_delta = 5.0;  ///< 湿度漂移触发阈值（%RH）
-    double ai_pressure_delta = 5.0;  ///< 气压漂移触发阈值（hPa）
     double ai_warn_temp_c = 35.0;    ///< 温度告警带边界（跨越即触发）
     double ai_warn_humidity = 80.0;  ///< 湿度告警带边界（%RH）
 
@@ -58,8 +57,6 @@ struct AppConfig
     double temp_max = 85.0;
     double hum_min = 0.0;
     double hum_max = 100.0;
-    double pressure_min = 800.0;
-    double pressure_max = 1200.0;
 
     // ---- device allowlist ----
     std::vector<std::string> device_allowlist;

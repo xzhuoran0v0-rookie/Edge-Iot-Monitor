@@ -41,7 +41,6 @@ def generate_reading(t: float, inject_anomaly: bool = False) -> dict:
 
     temperature = round(base_temp + random.gauss(0, 0.3), 2)
     humidity    = round(base_hum  + random.gauss(0, 0.5), 2)
-    pressure    = round(1013.0    + random.gauss(0, 0.2), 2)
 
     if inject_anomaly:
         # Spike one metric significantly
@@ -57,7 +56,6 @@ def generate_reading(t: float, inject_anomaly: bool = False) -> dict:
         "timestamp":   int(datetime.now(timezone.utc).timestamp()),
         "temperature": temperature,
         "humidity":    max(0.0, min(100.0, humidity)),
-        "pressure":    pressure,
     }
 
 
@@ -156,8 +154,7 @@ def main():
         print(
             f"[{ts}] #{counter:04d}  "
             f"temp={payload['temperature']:6.2f}°C  "
-            f"hum={payload['humidity']:5.1f}%  "
-            f"pres={payload['pressure']:.1f}hPa  → {status}"
+            f"hum={payload['humidity']:5.1f}%  → {status}"
         , file=out)
 
         if args.count > 0 and counter >= args.count:

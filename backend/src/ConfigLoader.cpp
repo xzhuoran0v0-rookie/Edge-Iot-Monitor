@@ -96,7 +96,6 @@ AppConfig loadConfig(const std::string &path)
                 if (t["min_interval_s"])  cfg.ai_min_interval_s = t["min_interval_s"].as<int>();
                 if (t["temp_delta_c"])    cfg.ai_temp_delta_c = t["temp_delta_c"].as<double>();
                 if (t["humidity_delta"])  cfg.ai_humidity_delta = t["humidity_delta"].as<double>();
-                if (t["pressure_delta"])  cfg.ai_pressure_delta = t["pressure_delta"].as<double>();
                 if (t["warn_temp_c"])     cfg.ai_warn_temp_c = t["warn_temp_c"].as<double>();
                 if (t["warn_humidity"])   cfg.ai_warn_humidity = t["warn_humidity"].as<double>();
             }
@@ -115,11 +114,6 @@ AppConfig loadConfig(const std::string &path)
             {
                 if (v["humidity"]["min"]) cfg.hum_min = v["humidity"]["min"].as<double>();
                 if (v["humidity"]["max"]) cfg.hum_max = v["humidity"]["max"].as<double>();
-            }
-            if (v["pressure"])
-            {
-                if (v["pressure"]["min"]) cfg.pressure_min = v["pressure"]["min"].as<double>();
-                if (v["pressure"]["max"]) cfg.pressure_max = v["pressure"]["max"].as<double>();
             }
         }
 
