@@ -263,7 +263,7 @@ void DataIngestor::handleIngest(const std::string &raw_json,
     // 4.AI分析
     ai_.onNewData(readings);
 
-    // 5.云同步（占位 — 华为云 IoTDA 对接待注册后填充）
+    // 5.云同步
     cloud_.onNewData(readings);
 
     // 6.返回响应（含 AI 分析，供设备端 OLED 显示）

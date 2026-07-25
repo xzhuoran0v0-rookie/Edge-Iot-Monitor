@@ -8,6 +8,9 @@
 
 #include "config.h"
 #include "certs.h"
+#include "sht30.h"
+#include "oled.h"
+#include "median_filter.h"
 
 WiFiClientSecure tlsClient;
 PubSubClient mqtt(tlsClient);
@@ -189,8 +192,8 @@ static void onMqttMessage(char *topicChars, byte *payload, unsigned int length)
     publishCommandResponse(requestId, 0, "success");
 }
 
-// 使用 IoTDA 官方 services 结构构造模拟温湿度属性。
-static String buildPropertyPayload()
+// 使用 IoTDA 官方 services 结构构造真实温湿度属性。
+static String buildPropertyPayload(float temp, float humi)
 {
     JsonDocument doc;
     JsonArray services = doc["services"].to<JsonArray>();
@@ -198,11 +201,6 @@ static String buildPropertyPayload()
     service["service_id"] = IOTDA_SERVICE_ID;
 
     JsonObject properties = service["properties"].to<JsonObject>();
-
-    // MVP uses test values to activate and verify the cloud path.
-    // Replace with SHT30 readings after IoTDA MQTT is confirmed working.
-    const float temp = 25.0f + (millis() % 1000) / 1000.0f;
-    const float humi = 60.0f + (millis() % 2000) / 200.0f;
     properties["temperature"] = roundf(temp * 10.0f) / 10.0f;
     properties["humidity"] = roundf(humi * 10.0f) / 10.0f;
 
@@ -283,6 +281,7 @@ static bool connectMqtt()
     }
 
     Serial.println("[MQTT] Connected to IoTDA.");
+    OLED::showStatus("MQTT OK");
     const String topic = commandSubscribeTopic();
     const bool subscribed = mqtt.subscribe(topic.c_str());
     Serial.print("[COMMAND] Subscribe ");
@@ -291,11 +290,29 @@ static bool connectMqtt()
     return true;
 }
 
-// 将当前模拟温湿度数据发布到 IoTDA。
+// 读取真实 SHT30，显示到 OLED，并将温湿度上报到 IoTDA。
 static void publishPropertyReport()
 {
+    float temp = 0, humi = 0;
+    if (!SHT30::read(temp, humi))
+    {
+        Serial.println("[SHT30] Read failed; skip this report.");
+        OLED::showStatus("SHT30 READ ERR");
+        return;
+    }
+
+    temp = medianFilterTemp(temp);
+    humi = medianFilterHumi(humi);
+
+    Serial.print("[SENSOR] Temp=");
+    Serial.print(temp, 1);
+    Serial.print("C  Humi=");
+    Serial.print(humi, 1);
+    Serial.println("%");
+    OLED::showSensorData(temp, humi);
+
     String topic = propertyReportTopic();
-    String payload = buildPropertyPayload();
+    String payload = buildPropertyPayload(temp, humi);
 
     Serial.print("[IoTDA] Publish topic=");
     Serial.println(topic);
@@ -312,13 +329,26 @@ void setup()
     delay(3000);
 
     Serial.println();
-    Serial.println("=== IoTDA Activation MVP ===");
+    Serial.println("=== IoTDA Cloud Firmware (real SHT30) ===");
 
+    OLED::init();
+    OLED::showStatus("STARTING");
+
+    if (!SHT30::init())
+    {
+        Serial.println("[SHT30] Init failed");
+        OLED::showStatus("SHT30 FAILED");
+    }
+
+    OLED::showStatus("WIFI CONNECTING");
     connectWiFi();
 
     tlsClient.setCACert(HUAWEI_ROOT_CA);
 
+    OLED::showStatus("TIME SYNC");
     syncTime();
+
+    OLED::showStatus("MQTT CONNECTING");
     connectMqtt();
 }
 
