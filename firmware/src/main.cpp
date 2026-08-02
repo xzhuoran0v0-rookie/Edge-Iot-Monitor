@@ -56,7 +56,6 @@ void setup()
 
     Serial.println("=== Edge IoT Monitor ===");
     HttpClient::initActuators();
-    HttpClient::testBuzzer();
     IotdaClient::logPlannedTopics();
 
     // OLED 初始化

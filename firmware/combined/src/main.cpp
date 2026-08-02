@@ -452,6 +452,9 @@ static void markSensorOffline()
     invalidSampleAlert = false;
     hardLimitAlert = false;
     hardLimitSafeSamples = 0;
+    sensorDriftAlert = false;
+    driftCount = 0;
+    driftNext = 0;
     storeSafetySnapshot(false, false, 0.0f, 0.0f);
     lastSensorRetryMs = millis();
     Serial.println("[SHT30] Lost connection; local and cloud uploads blocked");
@@ -761,7 +764,6 @@ static bool connectMqtt()
     }
 
     Serial.println("[MQTT] Connected to IoTDA.");
-    OLED::showStatus("MQTT OK");
     const String topic = commandSubscribeTopic();
     const bool subscribed = mqtt.subscribe(topic.c_str());
     Serial.print("[COMMAND] Subscribe ");
@@ -1071,5 +1073,6 @@ void loop()
         OLED::showStatus(backendNow ? "BACKEND OK" : "BACKEND OFFLINE");
     }
 
-    HttpClient::pollAndApplyCommand();
+    if (backendNow)
+        HttpClient::pollAndApplyCommand();
 }
