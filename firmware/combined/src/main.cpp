@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <time.h>
@@ -12,15 +13,442 @@
 #include "sht30.h"
 #include "oled.h"
 #include "median_filter.h"
+#include "adaptive_baseline.h"
+#include "edge_reasoner.h"
 
 #ifndef BUZZER_PIN
 #define BUZZER_PIN 4
 #endif
 
+#ifndef ENABLE_BUZZER
+#define ENABLE_BUZZER 0
+#endif
+
+#ifndef IOTDA_EDGE_SERVICE_ID
+#define IOTDA_EDGE_SERVICE_ID "EdgeReasoning"
+#endif
+
+#ifndef IOTDA_DISPLAY_SERVICE_ID
+#define IOTDA_DISPLAY_SERVICE_ID "Display"
+#endif
+
+#ifndef IOTDA_DISPLAY_COMMAND_NAME
+#define IOTDA_DISPLAY_COMMAND_NAME "ShowMessage"
+#endif
+
+namespace
+{
+constexpr uint8_t BUZZER_ON_LEVEL = LOW;
+constexpr uint8_t BUZZER_OFF_LEVEL = HIGH;
+constexpr unsigned long SENSOR_RETRY_INTERVAL_MS = 2000;
+constexpr unsigned long MQTT_RETRY_INTERVAL_MS = 5000;
+constexpr unsigned long SAFETY_SAMPLE_INTERVAL_MS = 1000;
+constexpr unsigned long SAFETY_SAMPLE_MAX_AGE_MS = 1500;
+constexpr uint8_t HARD_LIMIT_CLEAR_SAFE_SAMPLES = 3;
+constexpr size_t MQTT_BUFFER_SIZE = 1024;
+constexpr unsigned long BASELINE_PERSIST_RETRY_MS = 5UL * 60UL * 1000UL;
+constexpr char BASELINE_NVS_NAMESPACE[] = "envbaseline";
+constexpr char BASELINE_NVS_KEY[] = "state";
+
+AdaptiveBaselineConfig makeAdaptiveBaselineConfig()
+{
+    AdaptiveBaselineConfig config;
+    // Save once when learning first completes, then at most about once per
+    // hour at the current 10-second reasoning interval.
+    config.persistEveryLearnedSamples = 360;
+    config.minPersistIntervalMs = 60UL * 60UL * 1000UL;
+    return config;
+}
+
+bool sensorReady = false;
+unsigned long lastSensorRetryMs = 0;
+unsigned long lastMqttAttemptMs = 0;
+EdgeReasoner edgeReasoner;
+AdaptiveBaseline adaptiveBaseline(makeAdaptiveBaselineConfig());
+AdaptiveBaselineResult latestBaseline;
+Preferences baselinePreferences;
+bool baselinePreferencesReady = false;
+bool baselinePersistAttempted = false;
+unsigned long lastBaselinePersistAttemptMs = 0;
+bool invalidSampleAlert = false;
+bool hardLimitAlert = false;
+uint8_t hardLimitSafeSamples = 0;
+
+struct SafetySnapshot
+{
+    bool valid = false;
+    bool hardLimit = false;
+    float temperature = 0.0f;
+    float humidity = 0.0f;
+    uint32_t sampledAtMs = 0;
+    uint32_t generation = 0;
+};
+
+struct PendingHardLimitEvent
+{
+    bool pending = false;
+    float temperature = 0.0f;
+    float humidity = 0.0f;
+    uint32_t generation = 0;
+};
+
+portMUX_TYPE safetyStateMux = portMUX_INITIALIZER_UNLOCKED;
+SafetySnapshot latestSafetySnapshot;
+PendingHardLimitEvent pendingHardLimitEvent;
+TaskHandle_t safetyTaskHandle = nullptr;
+bool safetyTaskStarted = false;
+}
+
 WiFiClientSecure tlsClient;
 PubSubClient mqtt(tlsClient);
 
-unsigned long lastReportMs = 0;
+unsigned long lastSafetySampleMs = 0;
+unsigned long lastReasoningReportMs = 0;
+unsigned long lastCloudReportMs = 0;
+
+static void initAdaptiveBaseline()
+{
+    baselinePreferencesReady =
+        baselinePreferences.begin(BASELINE_NVS_NAMESPACE, false);
+    if (!baselinePreferencesReady)
+    {
+        Serial.println("[BASELINE] NVS unavailable; learning remains in RAM");
+        return;
+    }
+
+    const size_t storedBytes =
+        baselinePreferences.getBytesLength(BASELINE_NVS_KEY);
+    if (storedBytes == 0)
+    {
+        Serial.println("[BASELINE] No saved state; starting learning");
+        return;
+    }
+    if (storedBytes != AdaptiveBaseline::persistentStateSize())
+    {
+        Serial.println("[BASELINE] Saved state size mismatch; relearning");
+        return;
+    }
+
+    AdaptiveBaselinePersistentState state;
+    const size_t loadedBytes = baselinePreferences.getBytes(
+        BASELINE_NVS_KEY, &state, sizeof(state));
+    if (loadedBytes == sizeof(state) &&
+        adaptiveBaseline.restoreState(state, millis()))
+    {
+        latestBaseline = adaptiveBaseline.snapshot();
+        Serial.print("[BASELINE] Restored samples=");
+        Serial.println(latestBaseline.learnedSamples);
+        return;
+    }
+
+    Serial.println("[BASELINE] Saved state invalid; relearning");
+}
+
+static void persistAdaptiveBaselineIfDue()
+{
+    const unsigned long now = millis();
+    if (!baselinePreferencesReady ||
+        !adaptiveBaseline.persistenceDue(now) ||
+        (baselinePersistAttempted &&
+         now - lastBaselinePersistAttemptMs < BASELINE_PERSIST_RETRY_MS))
+    {
+        return;
+    }
+
+    baselinePersistAttempted = true;
+    lastBaselinePersistAttemptMs = now;
+    const AdaptiveBaselinePersistentState state =
+        adaptiveBaseline.exportState();
+    const size_t written = baselinePreferences.putBytes(
+        BASELINE_NVS_KEY, &state, sizeof(state));
+    if (written != sizeof(state))
+    {
+        Serial.println("[BASELINE] NVS save failed");
+        return;
+    }
+
+    adaptiveBaseline.markPersisted(now);
+    Serial.print("[BASELINE] Saved samples=");
+    Serial.println(state.learnedSamples);
+}
+
+static EdgeAssessment applyAdaptiveAssessment(
+    const EdgeAssessment &fixedAssessment,
+    const AdaptiveBaselineResult &baseline)
+{
+    if (baseline.hardLimitExceeded)
+    {
+        return {"HARD_LIMIT", "warning", 0.95f,
+                "FIXED_SAFETY_LIMIT",
+                "A fixed environmental safety limit was crossed.",
+                "SAFETY LIMIT"};
+    }
+
+    const bool fixedCanYield =
+        strcmp(fixedAssessment.state, "NORMAL") == 0 ||
+        (baseline.ready &&
+         strcmp(fixedAssessment.state, "WARMUP") == 0);
+    if (!baseline.outsideAdaptiveBand || !fixedCanYield)
+    {
+        return fixedAssessment;
+    }
+
+    if (baseline.temperatureOutsideBand &&
+        baseline.humidityOutsideBand)
+    {
+        return {"BASELINE_SHIFT", "watch", 0.82f,
+                "TEMP_HUMIDITY_OUTSIDE_BASELINE",
+                "Temperature and humidity moved outside the learned range.",
+                "PATTERN SHIFT"};
+    }
+    if (baseline.temperatureOutsideBand)
+    {
+        return {"BASELINE_SHIFT", "watch", 0.78f,
+                "TEMP_OUTSIDE_BASELINE",
+                "Temperature moved outside the learned normal range.",
+                "TEMP SHIFT"};
+    }
+    return {"BASELINE_SHIFT", "watch", 0.78f,
+            "HUMIDITY_OUTSIDE_BASELINE",
+            "Humidity moved outside the learned normal range.",
+            "HUMI SHIFT"};
+}
+
+static bool isPhysicalSensorSampleValid(float temperature,
+                                        float humidity)
+{
+    const AdaptiveBaselineConfig &config = adaptiveBaseline.config();
+    return isfinite(temperature) &&
+           isfinite(humidity) &&
+           temperature >= config.physicalTempLowerC &&
+           temperature <= config.physicalTempUpperC &&
+           humidity >= config.physicalHumidityLowerPct &&
+           humidity <= config.physicalHumidityUpperPct;
+}
+
+static AdaptiveBaselineResult makeRawHardLimitResult(
+    float temperature,
+    float humidity)
+{
+    const AdaptiveBaselineConfig &config = adaptiveBaseline.config();
+    const bool temperatureHard =
+        temperature <= config.hardTempLowerC ||
+        temperature >= config.hardTempUpperC;
+    const bool humidityHard =
+        humidity <= config.hardHumidityLowerPct ||
+        humidity >= config.hardHumidityUpperPct;
+
+    AdaptiveBaselineResult result = adaptiveBaseline.snapshot();
+    result.status = AdaptiveBaselineStatus::HARD_LIMIT;
+    result.validSample = true;
+    result.learned = false;
+    result.hardLimitExceeded = temperatureHard || humidityHard;
+    result.temperatureHardLimit = temperatureHard;
+    result.humidityHardLimit = humidityHard;
+    return result;
+}
+
+static void storeSafetySnapshot(bool valid,
+                                bool hardLimit,
+                                float temperature,
+                                float humidity)
+{
+    portENTER_CRITICAL(&safetyStateMux);
+    if (latestSafetySnapshot.valid != valid ||
+        (valid &&
+         latestSafetySnapshot.hardLimit != hardLimit))
+    {
+        ++latestSafetySnapshot.generation;
+    }
+    latestSafetySnapshot.valid = valid;
+    latestSafetySnapshot.hardLimit = hardLimit;
+    latestSafetySnapshot.temperature = temperature;
+    latestSafetySnapshot.humidity = humidity;
+    latestSafetySnapshot.sampledAtMs = millis();
+    portEXIT_CRITICAL(&safetyStateMux);
+}
+
+static SafetySnapshot loadSafetySnapshot()
+{
+    portENTER_CRITICAL(&safetyStateMux);
+    const SafetySnapshot snapshot = latestSafetySnapshot;
+    portEXIT_CRITICAL(&safetyStateMux);
+    return snapshot;
+}
+
+static bool safetySnapshotStillCurrent(
+    const SafetySnapshot &snapshot)
+{
+    const SafetySnapshot current = loadSafetySnapshot();
+    const unsigned long now = millis();
+    return snapshot.valid &&
+           current.valid &&
+           current.generation == snapshot.generation &&
+           now - snapshot.sampledAtMs <=
+               SAFETY_SAMPLE_MAX_AGE_MS &&
+           now - current.sampledAtMs <=
+               SAFETY_SAMPLE_MAX_AGE_MS;
+}
+
+static void queueHardLimitEvent(float temperature,
+                                float humidity)
+{
+    portENTER_CRITICAL(&safetyStateMux);
+    pendingHardLimitEvent.pending = true;
+    pendingHardLimitEvent.temperature = temperature;
+    pendingHardLimitEvent.humidity = humidity;
+    ++pendingHardLimitEvent.generation;
+    portEXIT_CRITICAL(&safetyStateMux);
+}
+
+static PendingHardLimitEvent loadPendingHardLimitEvent()
+{
+    portENTER_CRITICAL(&safetyStateMux);
+    const PendingHardLimitEvent event = pendingHardLimitEvent;
+    portEXIT_CRITICAL(&safetyStateMux);
+    return event;
+}
+
+static void acknowledgeHardLimitEvent(uint32_t generation)
+{
+    portENTER_CRITICAL(&safetyStateMux);
+    if (pendingHardLimitEvent.generation == generation)
+        pendingHardLimitEvent.pending = false;
+    portEXIT_CRITICAL(&safetyStateMux);
+}
+
+static void blockInvalidSensorSample(float temperature,
+                                     float humidity)
+{
+    invalidSampleAlert = true;
+    hardLimitAlert = false;
+    hardLimitSafeSamples = 0;
+    storeSafetySnapshot(false, false, temperature, humidity);
+    Serial.print("[SHT30] Invalid physical sample; uploads blocked temp=");
+    Serial.print(temperature);
+    Serial.print(" humidity=");
+    Serial.println(humidity);
+    OLED::showAlert("SHT30 INVALID DATA");
+}
+
+static bool ensureSensorReady(bool force = false)
+{
+    if (sensorReady)
+        return true;
+
+    const unsigned long now = millis();
+    if (!force && now - lastSensorRetryMs < SENSOR_RETRY_INTERVAL_MS)
+        return false;
+
+    lastSensorRetryMs = now;
+    Serial.println("[SHT30] Trying to connect...");
+    if (!SHT30::init())
+    {
+        Serial.println("[SHT30] Offline; local and cloud uploads blocked");
+        OLED::showAlert("SHT30 OFFLINE");
+        return false;
+    }
+
+    sensorReady = true;
+    Serial.println("[SHT30] Reconnected");
+    OLED::clearAlert();
+    OLED::showStatus("SHT30 ONLINE");
+    return true;
+}
+
+static void markSensorOffline()
+{
+    sensorReady = false;
+    invalidSampleAlert = false;
+    hardLimitAlert = false;
+    hardLimitSafeSamples = 0;
+    storeSafetySnapshot(false, false, 0.0f, 0.0f);
+    lastSensorRetryMs = millis();
+    Serial.println("[SHT30] Lost connection; local and cloud uploads blocked");
+    OLED::showAlert("SHT30 OFFLINE");
+}
+
+static void sampleSafetySensor()
+{
+    if (!ensureSensorReady())
+    {
+        storeSafetySnapshot(false, false, 0.0f, 0.0f);
+        return;
+    }
+
+    float temperature = 0.0f;
+    float humidity = 0.0f;
+    if (!SHT30::read(temperature, humidity))
+    {
+        markSensorOffline();
+        return;
+    }
+
+    if (!isPhysicalSensorSampleValid(temperature, humidity))
+    {
+        blockInvalidSensorSample(temperature, humidity);
+        return;
+    }
+
+    if (invalidSampleAlert)
+    {
+        invalidSampleAlert = false;
+        OLED::clearAlert();
+    }
+
+    const AdaptiveBaselineConfig &config = adaptiveBaseline.config();
+    const bool temperatureHard =
+        temperature <= config.hardTempLowerC ||
+        temperature >= config.hardTempUpperC;
+    const bool humidityHard =
+        humidity <= config.hardHumidityLowerPct ||
+        humidity >= config.hardHumidityUpperPct;
+    const bool hardLimit = temperatureHard || humidityHard;
+    storeSafetySnapshot(
+        true, hardLimit, temperature, humidity);
+
+    if (hardLimit)
+    {
+        hardLimitSafeSamples = 0;
+        if (!hardLimitAlert)
+        {
+            hardLimitAlert = true;
+            queueHardLimitEvent(temperature, humidity);
+            OLED::showAlert("ENV HARD LIMIT");
+            Serial.println(
+                "[SAFETY] Hard limit latched for next cloud slot");
+        }
+        return;
+    }
+
+    if (!hardLimitAlert)
+    {
+        hardLimitSafeSamples = 0;
+        return;
+    }
+
+    if (hardLimitSafeSamples < HARD_LIMIT_CLEAR_SAFE_SAMPLES)
+        ++hardLimitSafeSamples;
+    if (hardLimitSafeSamples >= HARD_LIMIT_CLEAR_SAFE_SAMPLES)
+    {
+        hardLimitAlert = false;
+        hardLimitSafeSamples = 0;
+        OLED::clearAlert();
+        Serial.println("[SAFETY] Hard limit cleared after stable safe samples");
+    }
+}
+
+static void safetyTask(void *)
+{
+    TickType_t nextWake = xTaskGetTickCount();
+    for (;;)
+    {
+        vTaskDelayUntil(
+            &nextWake,
+            pdMS_TO_TICKS(SAFETY_SAMPLE_INTERVAL_MS));
+        sampleSafetySensor();
+    }
+}
 
 // ---------------- IoTDA 官方 Topic ----------------
 static String propertyReportTopic()
@@ -97,7 +525,7 @@ static bool parseBuzzerValue(JsonVariantConst value, bool &enabled)
     return false;
 }
 
-// 云端下发命令回调：驱动真实蜂鸣器 (BUZZER_PIN)。
+// 云端下发命令回调：显示消息或驱动真实蜂鸣器 (BUZZER_PIN)。
 static void onMqttMessage(char *topicChars, byte *payload, unsigned int length)
 {
     const String topic(topicChars);
@@ -118,6 +546,35 @@ static void onMqttMessage(char *topicChars, byte *payload, unsigned int length)
 
     const char *serviceId = doc["service_id"] | "";
     const char *commandName = doc["command_name"] | "";
+
+    if (strcmp(serviceId, IOTDA_DISPLAY_SERVICE_ID) == 0 &&
+        strcmp(commandName, IOTDA_DISPLAY_COMMAND_NAME) == 0)
+    {
+        if (!doc["paras"]["message"].is<const char *>())
+        {
+            Serial.println("[COMMAND] Display message missing.");
+            publishCommandResponse(requestId, 1, "invalid_message");
+            return;
+        }
+
+        const String message =
+            doc["paras"]["message"].as<const char *>();
+        const long durationMs =
+            doc["paras"]["duration_ms"] | 30000L;
+        const bool accepted =
+            durationMs >= 0 &&
+            OLED::showCustomMessage(
+                message, static_cast<unsigned long>(durationMs));
+        Serial.println(accepted
+                           ? "[COMMAND] Display message accepted"
+                           : "[COMMAND] Display message rejected");
+        publishCommandResponse(
+            requestId,
+            accepted ? 0 : 1,
+            accepted ? "success" : "display_rejected");
+        return;
+    }
+
     if (strcmp(serviceId, IOTDA_ALARM_SERVICE_ID) != 0 ||
         strcmp(commandName, IOTDA_BUZZER_COMMAND_NAME) != 0)
     {
@@ -134,7 +591,13 @@ static void onMqttMessage(char *topicChars, byte *payload, unsigned int length)
         return;
     }
 
-    digitalWrite(BUZZER_PIN, enabled ? HIGH : LOW);
+#if !ENABLE_BUZZER
+    (void)enabled;
+    Serial.println("[BUZZER] Cloud command rejected: hardware disabled");
+    publishCommandResponse(requestId, 1, "hardware_disabled");
+    return;
+#else
+    digitalWrite(BUZZER_PIN, enabled ? BUZZER_ON_LEVEL : BUZZER_OFF_LEVEL);
     Serial.print("[BUZZER] ");
     Serial.println(enabled ? "ON" : "OFF");
 
@@ -142,8 +605,9 @@ static void onMqttMessage(char *topicChars, byte *payload, unsigned int length)
     if (enabled && durationMs > 0 && durationMs <= 30000)
     {
         delay(durationMs);
-        digitalWrite(BUZZER_PIN, LOW);
+        digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
     }
+#endif
 
     publishCommandResponse(requestId, 0, "success");
 }
@@ -173,6 +637,10 @@ static void syncTime()
 // 连接 IoTDA，并在每次重连后重新订阅命令 Topic。
 static bool connectMqtt()
 {
+    lastMqttAttemptMs = millis();
+    if (!WiFiManager::isConnected())
+        return false;
+
     if (String(IOTDA_MQTT_HOST).startsWith("your-") ||
         String(IOTDA_DEVICE_ID).startsWith("your_"))
     {
@@ -188,7 +656,7 @@ static bool connectMqtt()
     mqtt.setServer(IOTDA_MQTT_HOST, IOTDA_MQTT_PORT);
     mqtt.setCallback(onMqttMessage);
     mqtt.setKeepAlive(60);
-    mqtt.setBufferSize(512);
+    mqtt.setBufferSize(MQTT_BUFFER_SIZE);
 
     const bool ok = mqtt.connect(IOTDA_MQTT_CLIENT_ID, IOTDA_MQTT_USERNAME, IOTDA_MQTT_PASSWORD);
     if (!ok)
@@ -208,8 +676,10 @@ static bool connectMqtt()
     return true;
 }
 
-// 用 IoTDA 官方 services 结构构造真实温湿度属性。
-static String buildPropertyPayload(float temp, float humi)
+// One IoTDA property report carries both services, so a 10-second cloud
+// interval consumes 8,640 messages/day instead of 17,280.
+static String buildCloudPayload(float temp, float humi,
+                                const EdgeAssessment &assessment)
 {
     JsonDocument doc;
     JsonArray services = doc["services"].to<JsonArray>();
@@ -220,24 +690,41 @@ static String buildPropertyPayload(float temp, float humi)
     properties["temperature"] = roundf(temp * 10.0f) / 10.0f;
     properties["humidity"] = roundf(humi * 10.0f) / 10.0f;
 
+    JsonObject edgeService = services.add<JsonObject>();
+    edgeService["service_id"] = IOTDA_EDGE_SERVICE_ID;
+    JsonObject edgeProperties = edgeService["properties"].to<JsonObject>();
+    edgeProperties["state"] = assessment.state;
+    edgeProperties["severity"] = assessment.severity;
+    edgeProperties["confidence"] =
+        roundf(assessment.confidence * 100.0f) / 100.0f;
+    edgeProperties["reason_code"] = assessment.reasonCode;
+
     String payload;
     serializeJson(doc, payload);
     return payload;
 }
 
-static void publishToCloud(float temp, float humi)
+static bool publishToCloud(float temp, float humi,
+                           const EdgeAssessment &assessment)
 {
     if (!mqtt.connected())
-        return;
+        return false;
 
     const String topic = propertyReportTopic();
-    const String payload = buildPropertyPayload(temp, humi);
-
-    Serial.print("[IoTDA] Publish payload=");
+    const String payload = buildCloudPayload(temp, humi, assessment);
+    if (payload.length() + topic.length() + 16U >
+        MQTT_BUFFER_SIZE)
+    {
+        Serial.println("[IoTDA] Combined payload exceeds MQTT buffer");
+        return false;
+    }
+    Serial.print("[IoTDA] Combined payload=");
     Serial.println(payload);
-
     const bool ok = mqtt.publish(topic.c_str(), payload.c_str());
-    Serial.println(ok ? "[IoTDA] Publish OK" : "[IoTDA] Publish failed");
+    Serial.println(ok
+        ? "[IoTDA] Combined publish OK"
+        : "[IoTDA] Combined publish failed");
+    return ok;
 }
 
 void setup()
@@ -247,77 +734,205 @@ void setup()
 
     Serial.println();
     Serial.println("=== Edge IoT Monitor (Combined: local + cloud) ===");
+    Serial.printf("[HW] Flash=%u bytes PSRAM=%u bytes\n",
+                  ESP.getFlashChipSize(),
+                  ESP.getPsramSize());
 
+    initAdaptiveBaseline();
     HttpClient::initActuators();
 
     OLED::init();
     OLED::showStatus("STARTING");
 
+    // Sensor health is independent of network availability.
+    ensureSensorReady(true);
+    sampleSafetySensor();
+    lastSafetySampleMs = millis();
+    const BaseType_t safetyTaskResult =
+        xTaskCreatePinnedToCore(
+            safetyTask,
+            "sht30-safety",
+            4096,
+            nullptr,
+            3,
+            &safetyTaskHandle,
+            1);
+    safetyTaskStarted = safetyTaskResult == pdPASS;
+    Serial.println(safetyTaskStarted
+                       ? "[SAFETY] Dedicated 1 Hz task started"
+                       : "[SAFETY] Task start failed; loop fallback active");
+
     OLED::showStatus("WIFI CONNECTING");
     if (!WiFiManager::init(WIFI_SSID, WIFI_PASS, 20000))
     {
-        Serial.println("[ERROR] WiFi failed");
-        OLED::showStatus("WIFI FAILED");
-        while (true) delay(1000);
+        Serial.println("[WiFi] Offline; network uploads unavailable");
+        OLED::showStatus(
+            loadSafetySnapshot().valid
+                ? "WIFI OFFLINE"
+                : "SHT30 OFFLINE");
     }
-    Serial.println("[OK] WiFi connected");
-
-    if (!SHT30::init())
+    else
     {
-        Serial.println("[ERROR] SHT30 failed");
-        OLED::showStatus("SHT30 FAILED");
-        while (true) delay(1000);
+        Serial.println("[OK] WiFi connected");
     }
-    Serial.println("[OK] SHT30 ready");
 
     // 云端准备：TLS 根证书 + NTP 对时 + MQTT 连接。
     tlsClient.setCACert(HUAWEI_ROOT_CA);
 
-    OLED::showStatus("TIME SYNC");
-    syncTime();
+    if (WiFiManager::isConnected())
+    {
+        OLED::showStatus("TIME SYNC");
+        syncTime();
 
-    OLED::showStatus("MQTT CONNECTING");
-    connectMqtt();
+        OLED::showStatus("MQTT CONNECTING");
+        connectMqtt();
+    }
 }
 
 void loop()
 {
+    OLED::tick();
+
+    // Safety sampling always runs before network maintenance. Cloud quota
+    // policy is never allowed to extend this one-second local interval.
+    const unsigned long safetyNow = millis();
+    if (!safetyTaskStarted &&
+        safetyNow - lastSafetySampleMs >=
+            SAFETY_SAMPLE_INTERVAL_MS)
+    {
+        lastSafetySampleMs = safetyNow;
+        sampleSafetySensor();
+    }
+
+    // Keep MQTT online without hammering the broker while the network is down.
     WiFiManager::reconnectIfNeeded();
+    if (WiFiManager::isConnected())
+    {
+        if (!mqtt.connected() && millis() - lastMqttAttemptMs >= MQTT_RETRY_INTERVAL_MS)
+            connectMqtt();
+        if (mqtt.connected())
+            mqtt.loop();
+    }
 
-    // 保持 MQTT 在线并及时处理下行命令。
-    if (!mqtt.connected())
-        connectMqtt();
-    mqtt.loop();
+    // A hard-limit transition is latched until the next available 10-second
+    // cloud slot. The local alert is immediate, while cloud traffic remains
+    // inside the daily quota even if the condition clears before that slot.
+    const PendingHardLimitEvent pendingEvent =
+        loadPendingHardLimitEvent();
+    if (pendingEvent.pending &&
+        mqtt.connected() &&
+        millis() - lastCloudReportMs >=
+            REPORT_INTERVAL_MS)
+    {
+        lastCloudReportMs = millis();
+        const AdaptiveBaselineResult pendingLimit =
+            makeRawHardLimitResult(
+                pendingEvent.temperature,
+                pendingEvent.humidity);
+        const EdgeAssessment pendingAssessment =
+            applyAdaptiveAssessment(
+                edgeReasoner.assess(), pendingLimit);
+        if (publishToCloud(
+                pendingEvent.temperature,
+                pendingEvent.humidity,
+                pendingAssessment))
+        {
+            acknowledgeHardLimitEvent(
+                pendingEvent.generation);
+            Serial.println("[SAFETY] Latched hard limit published");
+        }
+    }
 
-    if (millis() - lastReportMs < REPORT_INTERVAL_MS)
+    const unsigned long reportNow = millis();
+    if (reportNow - lastReasoningReportMs < REPORT_INTERVAL_MS)
     {
         delay(20);
         return;
     }
-    lastReportMs = millis();
 
-    float temp = 0, humi = 0;
-    if (!SHT30::read(temp, humi))
+    // Invalid/offline sensor states revoke the cached report immediately.
+    // A timestamp guard also blocks a stale value if the safety task stalls.
+    const SafetySnapshot safetySnapshot =
+        loadSafetySnapshot();
+    const unsigned long snapshotNow = millis();
+    if (!safetySnapshot.valid ||
+        snapshotNow - safetySnapshot.sampledAtMs >
+            SAFETY_SAMPLE_MAX_AGE_MS)
     {
-        Serial.println("[WARN] SHT30 read failed");
+        if (safetySnapshot.valid)
+            Serial.println("[SAFETY] Stale sample; reports blocked");
+        delay(20);
         return;
     }
+    lastReasoningReportMs = reportNow;
 
-    temp = medianFilterTemp(temp);
-    humi = medianFilterHumi(humi);
+    float temp = safetySnapshot.temperature;
+    float humi = safetySnapshot.humidity;
+    if (safetySnapshot.hardLimit)
+    {
+        latestBaseline =
+            makeRawHardLimitResult(temp, humi);
+    }
+    else
+    {
+        temp = medianFilterTemp(temp);
+        humi = medianFilterHumi(humi);
+        latestBaseline = adaptiveBaseline.observe(temp, humi);
+        if (!latestBaseline.validSample)
+        {
+            Serial.println(
+                "[BASELINE] Filtered sample invalid; report blocked");
+            return;
+        }
+
+        edgeReasoner.add(temp, humi, millis());
+    }
+
+    persistAdaptiveBaselineIfDue();
+    const EdgeAssessment assessment =
+        applyAdaptiveAssessment(edgeReasoner.assess(), latestBaseline);
 
     Serial.print("[SENSOR] Temp=");
     Serial.print(temp, 1);
     Serial.print("C  Humi=");
     Serial.print(humi, 1);
     Serial.println("%");
+    Serial.print("[EDGE] state=");
+    Serial.print(assessment.state);
+    Serial.print(" severity=");
+    Serial.print(assessment.severity);
+    Serial.print(" confidence=");
+    Serial.print(assessment.confidence, 2);
+    Serial.print(" reason=");
+    Serial.println(assessment.reasonCode);
+    Serial.print("[BASELINE] status=");
+    Serial.print(AdaptiveBaseline::statusName(latestBaseline.status));
+    Serial.print(" progress=");
+    Serial.print(latestBaseline.progressPct);
+    Serial.print("% samples=");
+    Serial.println(latestBaseline.learnedSamples);
 
-    OLED::showSensorData(temp, humi);
+    OLED::updateDashboard(
+        temp, humi, assessment, latestBaseline, mqtt.connected());
 
-    // 本地后端路径：上报数据 + 拉取并执行本地命令。
-    HttpClient::postSensorData(temp, humi);
+    // Exactly one combined MQTT message carries both services each routine
+    // cycle: 8,640 reports/day at the configured 10-second interval.
+    if (!loadPendingHardLimitEvent().pending &&
+        mqtt.connected() &&
+        reportNow - lastCloudReportMs >= REPORT_INTERVAL_MS &&
+        safetySnapshotStillCurrent(safetySnapshot))
+    {
+        lastCloudReportMs = reportNow;
+        publishToCloud(temp, humi, assessment);
+    }
+
+    // The local backend remains unchanged and outside the cloud quota.
+    if (!safetySnapshotStillCurrent(safetySnapshot))
+    {
+        Serial.println(
+            "[SAFETY] Sensor state changed; uploads blocked");
+        return;
+    }
+    HttpClient::postSensorData(temp, humi, assessment);
     HttpClient::pollAndApplyCommand();
-
-    // 云端路径：上报到华为云 IoTDA（连接状态在 connectMqtt 成功时已显示到 OLED）。
-    publishToCloud(temp, humi);
 }

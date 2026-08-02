@@ -15,6 +15,7 @@ class HttpClient
 {
 public:
     static void initActuators();
+    static void testBuzzer();
 
     /**
      * @brief 发送传感器数据

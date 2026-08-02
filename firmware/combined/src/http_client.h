@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <HTTPClient.h>
+#include "edge_reasoner.h"
 
 /**
  * @brief HTTP POST 模块
@@ -23,7 +24,8 @@ public:
      * @param humi 湿度
      * @return true = 成功（HTTP 200）
      */
-    static bool postSensorData(float temp, float humi);
+    static bool postSensorData(float temp, float humi,
+                               const EdgeAssessment &assessment);
 
     static void pollAndApplyCommand();
 
@@ -35,7 +37,8 @@ private:
      * @param humi 湿度
      * @return JSON 字符串
      */
-    static String buildJson(float temp, float humi);
+    static String buildJson(float temp, float humi,
+                            const EdgeAssessment &assessment);
     static String commandBaseUrl();
     static void ackCommand(int commandId, const String &result);
     static bool applyCommand(const String &command, int durationMs);

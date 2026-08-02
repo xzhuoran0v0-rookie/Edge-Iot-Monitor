@@ -1,7 +1,7 @@
 #include "oled.h"
 
 // OLED 走 ESP32-S3 的第二条硬件 I2C 总线 (Wire1)，与 SHT30 的默认 Wire (GPIO17/18) 隔离。
-// 引脚为 OLED_SDA(39) / OLED_SCL(38)，在 OLED::init() 中 begin。
+// 引脚为 OLED_SDA(38) / OLED_SCL(39)，在 OLED::init() 中 begin。
 static TwoWire OLED_I2C = TwoWire(1);
 
 uint8_t OLED::cursor_page_ = 0;
@@ -90,7 +90,7 @@ void OLED::sendData(uint8_t *buf, size_t len)
 
 bool OLED::init()
 {
-    // 启动 OLED 专用 I2C 总线（Wire1: SDA=39, SCL=38）
+    // 启动 OLED 专用 I2C 总线（Wire1: SDA=38, SCL=39）
     OLED_I2C.begin(OLED_SDA, OLED_SCL);
 
     // SSD1315 初始化序列

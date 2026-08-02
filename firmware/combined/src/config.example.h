@@ -26,6 +26,11 @@
 
 // Product model names.
 #define IOTDA_SERVICE_ID "Environment"
+#define IOTDA_EDGE_SERVICE_ID "EdgeReasoning"
+
+// The current buzzer module is intentionally disabled until its wiring and
+// active level pass a hardware test.
+#define ENABLE_BUZZER 0
 #define IOTDA_ALARM_SERVICE_ID "Alarm"
 #define IOTDA_BUZZER_COMMAND_NAME "BuzzerControl"
 

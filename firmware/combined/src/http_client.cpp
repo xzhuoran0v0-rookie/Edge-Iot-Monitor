@@ -10,13 +10,31 @@
 #define BUZZER_PIN 4
 #endif
 
-void HttpClient::initActuators()
+#ifndef ENABLE_BUZZER
+#define ENABLE_BUZZER 0
+#endif
+
+namespace
 {
-    pinMode(BUZZER_PIN, OUTPUT);
-    digitalWrite(BUZZER_PIN, LOW);
+constexpr uint8_t BUZZER_ON_LEVEL = LOW;
+constexpr uint8_t BUZZER_OFF_LEVEL = HIGH;
 }
 
-bool HttpClient::postSensorData(float temp, float humi)
+void HttpClient::initActuators()
+{
+#if ENABLE_BUZZER
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
+#else
+    // The current buzzer module/wiring has not passed hardware verification.
+    // Keep the GPIO high-impedance so remote commands cannot energise it.
+    pinMode(BUZZER_PIN, INPUT);
+    Serial.println("[BUZZER] Disabled by safe firmware default");
+#endif
+}
+
+bool HttpClient::postSensorData(float temp, float humi,
+                                const EdgeAssessment &assessment)
 {
     if (!WiFi.isConnected())
     {
@@ -29,7 +47,7 @@ bool HttpClient::postSensorData(float temp, float humi)
     http.begin(SERVER_URL);
     http.addHeader("Content-Type", "application/json");
 
-    String payload = buildJson(temp, humi);
+    String payload = buildJson(temp, humi, assessment);
 
     Serial.print("[HTTP] POST ");
     Serial.println(payload);
@@ -50,7 +68,8 @@ bool HttpClient::postSensorData(float temp, float humi)
     return code == 200;
 }
 
-String HttpClient::buildJson(float temp, float humi)
+String HttpClient::buildJson(float temp, float humi,
+                             const EdgeAssessment &assessment)
 {
     // 用 millis() 当时间戳占位
     // 后端用 server_timestamp 覆盖，不影响存储
@@ -59,6 +78,12 @@ String HttpClient::buildJson(float temp, float humi)
     doc["timestamp"] = millis() / 1000;
     doc["temperature"] = roundf(temp * 10.0f) / 10.0f;
     doc["humidity"] = roundf(humi * 10.0f) / 10.0f;
+    JsonObject edge = doc["edge"].to<JsonObject>();
+    edge["state"] = assessment.state;
+    edge["severity"] = assessment.severity;
+    edge["confidence"] = roundf(assessment.confidence * 100.0f) / 100.0f;
+    edge["reason_code"] = assessment.reasonCode;
+    edge["reason"] = assessment.reason;
 
     String payload;
     serializeJson(doc, payload);
@@ -151,6 +176,14 @@ void HttpClient::ackCommand(int commandId, const String &result)
 
 bool HttpClient::applyCommand(const String &command, int durationMs)
 {
+#if !ENABLE_BUZZER
+    (void)durationMs;
+    if (command == "buzzer_on" || command == "buzzer_off")
+    {
+        Serial.println("[CMD] Buzzer command rejected: hardware disabled");
+        return false;
+    }
+#else
     if (command == "buzzer_on")
     {
         if (durationMs < 0 || durationMs > 30000)
@@ -159,11 +192,11 @@ bool HttpClient::applyCommand(const String &command, int durationMs)
         Serial.print("[CMD] buzzer_on ");
         Serial.print(durationMs);
         Serial.println("ms");
-        digitalWrite(BUZZER_PIN, HIGH);
+        digitalWrite(BUZZER_PIN, BUZZER_ON_LEVEL);
         if (durationMs > 0)
         {
             delay(durationMs);
-            digitalWrite(BUZZER_PIN, LOW);
+            digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
         }
         return true;
     }
@@ -171,9 +204,10 @@ bool HttpClient::applyCommand(const String &command, int durationMs)
     if (command == "buzzer_off")
     {
         Serial.println("[CMD] buzzer_off");
-        digitalWrite(BUZZER_PIN, LOW);
+        digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
         return true;
     }
+#endif
 
     Serial.print("[CMD] Rejected command: ");
     Serial.println(command);

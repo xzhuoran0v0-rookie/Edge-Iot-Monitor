@@ -3,9 +3,10 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-#define SHT30_SDA 17 //
-#define SHT30_SCL 18 //
-#define SHT30_ADDR 0x44
+#define SHT30_SDA 17
+#define SHT30_SCL 18
+#define SHT30_ADDR_PRIMARY 0x44
+#define SHT30_ADDR_SECONDARY 0x45
 
 /**
  * @brief SHT30温湿度传感器驱动
