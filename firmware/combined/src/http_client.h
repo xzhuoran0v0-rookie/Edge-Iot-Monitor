@@ -17,29 +17,21 @@ class HttpClient
 public:
     static void initActuators();
 
-    /**
-     * @brief 发送传感器数据
-     *
-     * @param temp 温度
-     * @param humi 湿度
-     * @return true = 成功（HTTP 200）
-     */
     static bool postSensorData(float temp, float humi,
                                const EdgeAssessment &assessment);
 
     static void pollAndApplyCommand();
 
+    static bool backendReachable();
+    static void resetBackoff();
+
 private:
-    /**
-     * @brief 构造 JSON 字符串
-     *
-     * @param temp 温度
-     * @param humi 湿度
-     * @return JSON 字符串
-     */
     static String buildJson(float temp, float humi,
                             const EdgeAssessment &assessment);
     static String commandBaseUrl();
     static void ackCommand(int commandId, const String &result);
     static bool applyCommand(const String &command, int durationMs);
+
+    static uint8_t consecutiveFailures_;
+    static unsigned long backoffUntilMs_;
 };

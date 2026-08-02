@@ -47,6 +47,11 @@ constexpr unsigned long SAFETY_SAMPLE_MAX_AGE_MS = 1500;
 constexpr uint8_t HARD_LIMIT_CLEAR_SAFE_SAMPLES = 3;
 constexpr size_t MQTT_BUFFER_SIZE = 1024;
 constexpr unsigned long BASELINE_PERSIST_RETRY_MS = 5UL * 60UL * 1000UL;
+constexpr unsigned long NTP_SYNC_TIMEOUT_MS = 8000;
+constexpr unsigned long NTP_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
+constexpr uint8_t DRIFT_WINDOW_SIZE = 10;
+constexpr float DRIFT_MIN_TEMP_RISE_C = 2.0f;
+constexpr float DRIFT_MAX_HUMIDITY_RISE_PCT = 1.0f;
 constexpr char BASELINE_NVS_NAMESPACE[] = "envbaseline";
 constexpr char BASELINE_NVS_KEY[] = "state";
 
@@ -73,6 +78,21 @@ unsigned long lastBaselinePersistAttemptMs = 0;
 bool invalidSampleAlert = false;
 bool hardLimitAlert = false;
 uint8_t hardLimitSafeSamples = 0;
+bool ntpSynced = false;
+unsigned long lastNtpAttemptMs = 0;
+bool backendWasReachable = true;
+bool mqttWasConnected = false;
+bool wifiWasConnected = false;
+
+struct DriftSample
+{
+    float temperature = 0.0f;
+    float humidity = 0.0f;
+};
+DriftSample driftWindow[DRIFT_WINDOW_SIZE]{};
+uint8_t driftCount = 0;
+uint8_t driftNext = 0;
+bool sensorDriftAlert = false;
 
 struct SafetySnapshot
 {
@@ -170,6 +190,76 @@ static void persistAdaptiveBaselineIfDue()
     adaptiveBaseline.markPersisted(now);
     Serial.print("[BASELINE] Saved samples=");
     Serial.println(state.learnedSamples);
+}
+
+static void addDriftSample(float temperature, float humidity)
+{
+    driftWindow[driftNext].temperature = temperature;
+    driftWindow[driftNext].humidity = humidity;
+    driftNext = (driftNext + 1) % DRIFT_WINDOW_SIZE;
+    if (driftCount < DRIFT_WINDOW_SIZE)
+        ++driftCount;
+}
+
+static bool detectSensorDrift()
+{
+    if (driftCount < DRIFT_WINDOW_SIZE)
+        return false;
+
+    const uint8_t oldest = driftNext;
+    const uint8_t newest = (driftNext + DRIFT_WINDOW_SIZE - 1) % DRIFT_WINDOW_SIZE;
+    const float tempRise =
+        driftWindow[newest].temperature - driftWindow[oldest].temperature;
+    const float humiRise =
+        driftWindow[newest].humidity - driftWindow[oldest].humidity;
+
+    if (tempRise < DRIFT_MIN_TEMP_RISE_C || humiRise > DRIFT_MAX_HUMIDITY_RISE_PCT)
+        return false;
+
+    for (uint8_t i = 1; i < driftCount; ++i)
+    {
+        const uint8_t prev = (oldest + i - 1) % DRIFT_WINDOW_SIZE;
+        const uint8_t curr = (oldest + i) % DRIFT_WINDOW_SIZE;
+        if (driftWindow[curr].temperature < driftWindow[prev].temperature - 0.1f)
+            return false;
+    }
+    return true;
+}
+
+static bool trySyncTime()
+{
+    Serial.println("[TIME] Syncing UTC time by NTP...");
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+
+    struct tm tmUtc;
+    if (!getLocalTime(&tmUtc, NTP_SYNC_TIMEOUT_MS))
+    {
+        Serial.println("[TIME] NTP sync failed; MQTT deferred");
+        return false;
+    }
+
+    char buf[11];
+    strftime(buf, sizeof(buf), "%Y%m%d%H", &tmUtc);
+    Serial.print("[TIME] UTC auth timestamp=");
+    Serial.println(buf);
+    return true;
+}
+
+static void retryNtpIfNeeded()
+{
+    if (ntpSynced || !WiFiManager::isConnected())
+        return;
+
+    const unsigned long now = millis();
+    if (now - lastNtpAttemptMs < NTP_RETRY_INTERVAL_MS)
+        return;
+
+    lastNtpAttemptMs = now;
+    if (trySyncTime())
+    {
+        ntpSynced = true;
+        OLED::showStatus("TIME OK");
+    }
 }
 
 static EdgeAssessment applyAdaptiveAssessment(
@@ -396,6 +486,8 @@ static void sampleSafetySensor()
         OLED::clearAlert();
     }
 
+    addDriftSample(temperature, humidity);
+
     const AdaptiveBaselineConfig &config = adaptiveBaseline.config();
     const bool temperatureHard =
         temperature <= config.hardTempLowerC ||
@@ -404,11 +496,33 @@ static void sampleSafetySensor()
         humidity <= config.hardHumidityLowerPct ||
         humidity >= config.hardHumidityUpperPct;
     const bool hardLimit = temperatureHard || humidityHard;
-    storeSafetySnapshot(
-        true, hardLimit, temperature, humidity);
+
+    if (hardLimit && detectSensorDrift())
+    {
+        storeSafetySnapshot(true, false, temperature, humidity);
+        if (!sensorDriftAlert)
+        {
+            sensorDriftAlert = true;
+            hardLimitAlert = false;
+            hardLimitSafeSamples = 0;
+            OLED::showAlert("SENSOR DRIFT");
+            Serial.println("[SAFETY] Sensor self-heating drift detected");
+        }
+        return;
+    }
+
+    if (sensorDriftAlert && !hardLimit)
+    {
+        sensorDriftAlert = false;
+        OLED::clearAlert();
+        Serial.println("[SAFETY] Sensor drift cleared");
+    }
+
+    storeSafetySnapshot(true, hardLimit, temperature, humidity);
 
     if (hardLimit)
     {
+        sensorDriftAlert = false;
         hardLimitSafeSamples = 0;
         if (!hardLimitAlert)
         {
@@ -612,27 +726,7 @@ static void onMqttMessage(char *topicChars, byte *payload, unsigned int length)
     publishCommandResponse(requestId, 0, "success");
 }
 
-// TLS 证书校验和 MQTT 鉴权都依赖正确的系统时间。
-static String utcHourTimestamp()
-{
-    struct tm tmUtc;
-    if (!getLocalTime(&tmUtc, 10000))
-        return "";
-
-    char buf[11];
-    strftime(buf, sizeof(buf), "%Y%m%d%H", &tmUtc);
-    return String(buf);
-}
-
-static void syncTime()
-{
-    Serial.println("[TIME] Syncing UTC time by NTP...");
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-
-    const String timestamp = utcHourTimestamp();
-    Serial.print("[TIME] UTC auth timestamp=");
-    Serial.println(timestamp.isEmpty() ? "(failed)" : timestamp);
-}
+// syncTime / utcHourTimestamp removed — replaced by trySyncTime() + retryNtpIfNeeded()
 
 // 连接 IoTDA，并在每次重连后重新订阅命令 Topic。
 static bool connectMqtt()
@@ -781,11 +875,20 @@ void setup()
 
     if (WiFiManager::isConnected())
     {
+        wifiWasConnected = true;
         OLED::showStatus("TIME SYNC");
-        syncTime();
+        lastNtpAttemptMs = millis();
+        ntpSynced = trySyncTime();
 
-        OLED::showStatus("MQTT CONNECTING");
-        connectMqtt();
+        if (ntpSynced)
+        {
+            OLED::showStatus("MQTT CONNECTING");
+            mqttWasConnected = connectMqtt();
+        }
+        else
+        {
+            OLED::showStatus("NTP FAILED");
+        }
     }
 }
 
@@ -804,14 +907,41 @@ void loop()
         sampleSafetySensor();
     }
 
-    // Keep MQTT online without hammering the broker while the network is down.
     WiFiManager::reconnectIfNeeded();
-    if (WiFiManager::isConnected())
+    const bool wifiNow = WiFiManager::isConnected();
+    if (wifiNow != wifiWasConnected)
     {
-        if (!mqtt.connected() && millis() - lastMqttAttemptMs >= MQTT_RETRY_INTERVAL_MS)
-            connectMqtt();
-        if (mqtt.connected())
-            mqtt.loop();
+        wifiWasConnected = wifiNow;
+        if (!wifiNow)
+            OLED::showStatus("WIFI OFFLINE");
+        else
+            OLED::showStatus("WIFI OK");
+    }
+
+    if (wifiNow)
+    {
+        retryNtpIfNeeded();
+
+        if (ntpSynced)
+        {
+            const bool mqttNow = mqtt.connected();
+            if (!mqttNow && millis() - lastMqttAttemptMs >= MQTT_RETRY_INTERVAL_MS)
+            {
+                const bool ok = connectMqtt();
+                if (ok && !mqttWasConnected)
+                    OLED::showStatus("MQTT OK");
+                if (!ok && mqttWasConnected)
+                    OLED::showStatus("MQTT OFFLINE");
+                mqttWasConnected = ok;
+            }
+            else if (mqttNow != mqttWasConnected)
+            {
+                mqttWasConnected = mqttNow;
+                OLED::showStatus(mqttNow ? "MQTT OK" : "MQTT OFFLINE");
+            }
+            if (mqtt.connected())
+                mqtt.loop();
+        }
     }
 
     // A hard-limit transition is latched until the next available 10-second
@@ -926,7 +1056,6 @@ void loop()
         publishToCloud(temp, humi, assessment);
     }
 
-    // The local backend remains unchanged and outside the cloud quota.
     if (!safetySnapshotStillCurrent(safetySnapshot))
     {
         Serial.println(
@@ -934,5 +1063,13 @@ void loop()
         return;
     }
     HttpClient::postSensorData(temp, humi, assessment);
+
+    const bool backendNow = HttpClient::backendReachable();
+    if (backendNow != backendWasReachable)
+    {
+        backendWasReachable = backendNow;
+        OLED::showStatus(backendNow ? "BACKEND OK" : "BACKEND OFFLINE");
+    }
+
     HttpClient::pollAndApplyCommand();
 }

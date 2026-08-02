@@ -18,7 +18,13 @@ namespace
 {
 constexpr uint8_t BUZZER_ON_LEVEL = LOW;
 constexpr uint8_t BUZZER_OFF_LEVEL = HIGH;
+constexpr uint8_t MAX_BACKOFF_FAILURES = 6;
+constexpr unsigned long BASE_BACKOFF_MS = 10000;
+constexpr unsigned long MAX_BACKOFF_MS = 5UL * 60UL * 1000UL;
 }
+
+uint8_t HttpClient::consecutiveFailures_ = 0;
+unsigned long HttpClient::backoffUntilMs_ = 0;
 
 void HttpClient::initActuators()
 {
@@ -33,39 +39,66 @@ void HttpClient::initActuators()
 #endif
 }
 
+bool HttpClient::backendReachable()
+{
+    return consecutiveFailures_ == 0;
+}
+
+void HttpClient::resetBackoff()
+{
+    consecutiveFailures_ = 0;
+    backoffUntilMs_ = 0;
+}
+
 bool HttpClient::postSensorData(float temp, float humi,
                                 const EdgeAssessment &assessment)
 {
     if (!WiFi.isConnected())
-    {
-        Serial.println("[HTTP] WiFi not connected, skip");
         return false;
-    }
+
+    const unsigned long now = millis();
+    if (consecutiveFailures_ > 0 &&
+        static_cast<int32_t>(now - backoffUntilMs_) < 0)
+        return false;
 
     HTTPClient http;
-
     http.begin(SERVER_URL);
     http.addHeader("Content-Type", "application/json");
 
     String payload = buildJson(temp, humi, assessment);
-
-    Serial.print("[HTTP] POST ");
-    Serial.println(payload);
-
     int code = http.POST(payload);
-
-    Serial.print("[HTTP] Response code: ");
-    Serial.println(code);
+    http.end();
 
     if (code == 200)
     {
-        Serial.print("[HTTP] Response: ");
-        Serial.println(http.getString());
+        if (consecutiveFailures_ > 0)
+        {
+            Serial.println("[HTTP] Backend recovered");
+            consecutiveFailures_ = 0;
+        }
+        backoffUntilMs_ = 0;
+        return true;
     }
 
-    http.end();
-
-    return code == 200;
+    if (consecutiveFailures_ < MAX_BACKOFF_FAILURES)
+        ++consecutiveFailures_;
+    unsigned long backoffMs = BASE_BACKOFF_MS;
+    for (uint8_t i = 1; i < consecutiveFailures_; ++i)
+    {
+        backoffMs *= 2;
+        if (backoffMs > MAX_BACKOFF_MS)
+        {
+            backoffMs = MAX_BACKOFF_MS;
+            break;
+        }
+    }
+    backoffUntilMs_ = now + backoffMs;
+    Serial.print("[HTTP] POST failed code=");
+    Serial.print(code);
+    Serial.print(" backoff=");
+    Serial.print(backoffMs / 1000);
+    Serial.println("s");
+    return false;
 }
 
 String HttpClient::buildJson(float temp, float humi,
