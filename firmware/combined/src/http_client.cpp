@@ -1,5 +1,4 @@
 #include "http_client.h"
-#include "oled.h"
 #include "config.h"
 #include <ArduinoJson.h>
 
@@ -242,18 +241,6 @@ bool HttpClient::applyCommand(const String &command, int durationMs)
         return true;
     }
 #endif
-
-    if (command.startsWith("oled:"))
-    {
-        String message = command.substring(5);
-        message.trim();
-        if (message.isEmpty())
-            return false;
-        unsigned long dur = durationMs > 0 ? durationMs : 30000;
-        bool ok = OLED::showCustomMessage(message, dur);
-        Serial.println(ok ? "[CMD] OLED message accepted" : "[CMD] OLED message rejected");
-        return ok;
-    }
 
     Serial.print("[CMD] Rejected command: ");
     Serial.println(command);
