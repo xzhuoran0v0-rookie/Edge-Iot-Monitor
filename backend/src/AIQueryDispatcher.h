@@ -115,13 +115,10 @@ public:
     void onNewData(const std::vector<SensorReading> &readings,
                    bool anomaly_detected = false);
 
-    /**
-     * @brief 获取最近一次 AI 分析结果（用于回传给设备端，线程安全）
-     *
-     * @param device_id 设备ID
-     * @return 最近一次分析文本；如果还没跑过 AI 则返回空字符串 ""
-     */
     std::string getLastAnalysis(const std::string &device_id) const;
+
+    std::string answerPrompt(const std::string &device_id,
+                             const std::string &user_prompt);
 
 private:
     /**

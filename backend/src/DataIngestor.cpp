@@ -12,6 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+#include <fstream>
 
 using json = nlohmann::json;
 
@@ -133,7 +134,25 @@ bool DataIngestor::start(const std::string &host,
         };
     }
 
-    // 健康检查接口(用于测试服务是否存活)
+    auto ret = svr.set_mount_point("/", "../frontend/dist");
+    if (!ret)
+        std::cerr << "[WARN] Static mount ../frontend/dist not found — API-only mode\n";
+
+    svr.set_error_handler([&svr](const httplib::Request &req, httplib::Response &res) {
+        if (res.status == 404 && req.path.substr(0, 4) != "/api" &&
+            req.path != "/health")
+        {
+            std::ifstream ifs("../frontend/dist/index.html");
+            if (ifs.good())
+            {
+                std::string html((std::istreambuf_iterator<char>(ifs)),
+                                  std::istreambuf_iterator<char>());
+                res.set_content(html, "text/html");
+                res.status = 200;
+            }
+        }
+    });
+
     svr.Get("/health", [](const httplib::Request &, httplib::Response &res)
             { res.set_content(R"({"status":"ok"})", "application/json"); });
 
@@ -146,6 +165,33 @@ bool DataIngestor::start(const std::string &host,
                  handleIngest(req.body, response, status);
                  res.status = status;
                  res.set_content(response, "application/json");
+             });
+
+    svr.Post("/api/prompt",
+             [this](const httplib::Request &req, httplib::Response &res)
+             {
+                 try
+                 {
+                     auto j = json::parse(req.body);
+                     std::string device_id = j.value("device_id", "esp32s3-001");
+                     std::string prompt = j.at("prompt").get<std::string>();
+
+                     if (!isDeviceAllowed(device_id))
+                     {
+                         res.status = 401;
+                         res.set_content(makeError("device not authorized"), "application/json");
+                         return;
+                     }
+
+                     std::string answer = ai_.answerPrompt(device_id, prompt);
+                     res.set_content(json({{"status", "ok"}, {"answer", answer}}).dump(),
+                                    "application/json");
+                 }
+                 catch (const std::exception &e)
+                 {
+                     res.status = 500;
+                     res.set_content(makeError(e.what()), "application/json");
+                 }
              });
 
     svr.Post("/api/commands",
@@ -603,5 +649,6 @@ bool DataIngestor::isCommandApiAuthorized(const std::string &api_key) const
 
 bool DataIngestor::isAllowedCommand(const std::string &command)
 {
-    return command == "buzzer_on" || command == "buzzer_off";
+    return command == "buzzer_on" || command == "buzzer_off" ||
+           command.substr(0, 5) == "oled:";
 }
