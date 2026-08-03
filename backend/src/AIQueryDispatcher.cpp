@@ -599,3 +599,41 @@ std::string AIQueryDispatcher::getLastAnalysis(const std::string &device_id) con
         return it->second;
     return "";
 }
+
+std::string AIQueryDispatcher::answerPrompt(const std::string &device_id,
+                                            const std::string &user_prompt)
+{
+    auto history = storage_.getRecentReadings(device_id, window_size_);
+    const auto summaries = summarize(history);
+
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(2);
+    ss << "You are an IoT environment monitoring assistant.\n"
+       << "Answer the user's question using the sensor data below.\n"
+       << "Reply in English, 1-3 sentences. Be concise and data-driven.\n\n";
+
+    ss << "Device: " << device_id << "\n\n";
+
+    if (!summaries.empty())
+    {
+        ss << "## Recent sensor data\n";
+        for (const auto &s : summaries)
+        {
+            ss << "- " << s.sensor_type << " [" << s.unit << "]"
+               << "  now=" << s.latest
+               << "  min=" << s.min << "  max=" << s.max
+               << "  mean=" << s.mean
+               << "  change=" << (s.delta >= 0 ? "+" : "") << s.delta
+               << "  over " << s.span_seconds << "s"
+               << "  samples=" << s.count << "\n";
+        }
+    }
+    else
+    {
+        ss << "No sensor data available.\n";
+    }
+
+    ss << "\nUser question: " << user_prompt << "\n";
+
+    return callLLM(ss.str());
+}

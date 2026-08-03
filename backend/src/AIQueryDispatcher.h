@@ -123,6 +123,9 @@ public:
      */
     std::string getLastAnalysis(const std::string &device_id) const;
 
+    std::string answerPrompt(const std::string &device_id,
+                             const std::string &user_prompt);
+
 private:
     /**
      * @brief 单个 sensor_type 在窗口内的统计摘要
