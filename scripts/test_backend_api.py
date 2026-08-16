@@ -156,6 +156,136 @@ def wait_for_health(proc: subprocess.Popen, timeout_s: float = 5.0, port: int = 
     raise TimeoutError("server did not become healthy")
 
 
+def run_edge_assessment_test() -> None:
+    """The device's own verdict must survive the trip to the dashboard.
+
+    EdgeReasoner runs on the ESP32 and ships its conclusion in the ingest
+    payload. Before this path existed the backend parsed only temperature and
+    humidity, so the headline feature was silently dropped at the door. This
+    asserts the round trip: ingest -> store -> GET /api/readings.
+    """
+    def ingest(temp: float, hum: float, edge=None):
+        payload = {"device_id": "esp32s3-001", "temperature": temp, "humidity": hum}
+        if edge is not None:
+            payload["edge"] = edge
+        return request("POST", "/api/ingest", payload)
+
+    def assessment(state: str, severity: str, code: str) -> dict:
+        return {
+            "state": state,
+            "severity": severity,
+            "confidence": 0.87,
+            "reason_code": code,
+            "reason": "Temperature and humidity are both elevated.",
+        }
+
+    readings_path = "/api/readings?device_id=" + urllib.parse.quote("esp32s3-001")
+
+    # A payload with no "edge" object stays valid: the simulator and older
+    # firmware do not send one.
+    assert_response(ingest(24.0, 50.0), 200, "ok")
+
+    assert_response(
+        ingest(31.0, 72.0, assessment("HEAT_HUMID_RISK", "warning", "HOT_AND_HUMID")),
+        200,
+        "ok",
+    )
+
+    body = assert_response(request("GET", readings_path), 200, "ok")
+    edge = body.get("edge")
+    if not edge or edge["state"] != "HEAT_HUMID_RISK":
+        raise AssertionError(f"edge assessment did not reach /api/readings: {body}")
+    if edge["severity"] != "warning" or edge["reason_code"] != "HOT_AND_HUMID":
+        raise AssertionError(f"edge assessment altered in transit: {edge}")
+    if not edge.get("since"):
+        raise AssertionError(f"edge assessment has no start time: {edge}")
+
+    # Readings come back grouped, oldest first, so the dashboard can plot them
+    # without re-sorting.
+    temps = body["series"]["temperature"]["points"]
+    if len(temps) < 2 or temps[0]["timestamp"] > temps[-1]["timestamp"]:
+        raise AssertionError(f"temperature series is not chronological: {temps}")
+
+    # The device repeats its verdict every cycle; only transitions are recorded,
+    # so "since" keeps pointing at when the state actually began.
+    first_since = edge["since"]
+    time.sleep(1.1)  # timestamps have 1 s resolution
+    for _ in range(3):
+        assert_response(
+            ingest(31.5, 73.0, assessment("HEAT_HUMID_RISK", "warning", "HOT_AND_HUMID")),
+            200,
+            "ok",
+        )
+    repeated = assert_response(request("GET", readings_path), 200, "ok")["edge"]
+    if repeated["since"] != first_since:
+        raise AssertionError(
+            f"unchanged state should keep its original start time: {first_since} -> {repeated['since']}"
+        )
+
+    # A real transition moves it.
+    assert_response(
+        ingest(24.0, 50.0, assessment("NORMAL", "info", "STABLE_ENVIRONMENT")),
+        200,
+        "ok",
+    )
+    changed = assert_response(request("GET", readings_path), 200, "ok")["edge"]
+    if changed["state"] != "NORMAL" or changed["since"] == first_since:
+        raise AssertionError(f"state change was not recorded: {changed}")
+
+    # A malformed edge object is a firmware bug — fail loudly instead of
+    # accepting the reading and quietly showing no reasoning on the dashboard.
+    assert_response(ingest(24.0, 50.0, "not-an-object"), 400, "error")
+
+    # Unknown devices cannot read another device's data.
+    assert_response(
+        request("GET", "/api/readings?device_id=" + urllib.parse.quote("bad")),
+        401,
+        "error",
+    )
+    assert_response(request("GET", "/api/readings"), 400, "error")
+
+
+def run_oled_command_test() -> None:
+    """The backend must not queue a command the device will reject.
+
+    The firmware's showCustomMessage() accepts 5000-120000 ms and printable
+    ASCII only. The backend used to accept 0-30000 ms and any text, so an
+    oled: command with duration 1000, or with Chinese text, returned 202 and
+    then failed silently on the device.
+    """
+    key = {"X-Api-Key": "test-key"}
+
+    def create(command: str, duration_ms: int):
+        return request(
+            "POST",
+            "/api/commands",
+            {"device_id": "esp32s3-001", "command": command, "duration_ms": duration_ms},
+            key,
+        )
+
+    # Below the firmware minimum: the device would reject it, so we must too.
+    assert_response(create("oled:HELLO", 1000), 400, "error")
+    # Above the firmware maximum.
+    assert_response(create("oled:HELLO", 200000), 400, "error")
+    # In range.
+    assert_response(create("oled:HELLO", 8000), 202, "queued")
+
+    # 0 means "device default" and is stored explicitly, so the queued row
+    # states what will actually happen instead of implying zero duration.
+    queued = assert_response(create("oled:ALL CLEAR", 0), 202, "queued")
+    if queued["duration_ms"] != 30000:
+        raise AssertionError(f"expected duration_ms normalised to 30000, got {queued}")
+
+    # The OLED has no Chinese font; the firmware rejects non-ASCII byte by byte.
+    assert_response(create("oled:温度过高", 8000), 400, "error")
+    assert_response(create("oled:   ", 8000), 400, "error")
+    assert_response(create("oled:", 8000), 400, "error")
+
+    # The buzzer keeps its own range, which is different from the OLED's.
+    assert_response(create("buzzer_on", 1000), 202, "queued")
+    assert_response(create("buzzer_on", 60000), 400, "error")
+
+
 def run_narration_trigger_test(binary: Path) -> None:
     """The LLM narrates on state CHANGE, never on a record count.
 
@@ -321,6 +451,9 @@ def main() -> int:
                 400,
                 "error",
             )
+
+            run_edge_assessment_test()
+            run_oled_command_test()
 
             print("backend API smoke tests passed")
         finally:

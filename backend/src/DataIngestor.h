@@ -2,6 +2,7 @@
 
 #include <string>
 #include <memory>
+#include <optional>
 #include <vector>
 #include "StorageEngine.h"
 
@@ -105,16 +106,29 @@ private:
                           int &status_code);
 
     /**
+     * @brief 仪表盘数据查询（GET /api/readings）
+     *
+     * 一次返回网页需要的全部内容：温湿度序列、设备端最新推理结论、在线状态。
+     * 分成三个接口意味着三次往返和三份可能不一致的时间戳，这里合成一份快照。
+     */
+    void handleReadings(const std::string &device_id,
+                        const std::string &limit_param,
+                        std::string &respond_json,
+                        int &status_code);
+
+    /**
      * @brief 解析JSON数据
      *
      * @param raw_json 原始JSON数据
      * @param out_readings 输出：拆分后的多条读数（temperature/humidity）
+     * @param out_edge 输出：设备端推理结果（payload 里没有 "edge" 时为空）
      * @param error_msg 失败返回错误信息
      *
      * @return 是否解析成功
      */
     bool parseJson(const std::string &raw_json,
                    std::vector<SensorReading> &out_readings,
+                   std::optional<EdgeAssessment> &out_edge,
                    std::string &error_msg);
 
     /**
@@ -132,6 +146,15 @@ private:
     bool isCommandApiAuthorized(const std::string &api_key) const;
     static bool isAllowedCommand(const std::string &command);
 
+    /// 按命令类型校验并归一化时长。区间来自固件，见 .cpp 中的说明。
+    static bool normalizeCommandDuration(const std::string &command,
+                                         int &duration_ms,
+                                         std::string &error_msg);
+
+    /// 镜像固件的 OLED 文本校验（可打印 ASCII，最长 240 字节）。
+    static bool isDisplayableOledText(const std::string &text,
+                                      std::string &error_msg);
+
     //=========== 依赖模块 ==============//
     StorageEngine &storage_; ///< 数据库存储模块
     DataFilter &filter_;     ///< 异常检测模块(IQR算法)
@@ -143,6 +166,9 @@ private:
     double hum_min_,  hum_max_;
     std::vector<std::string> allowlist_;
     std::string command_api_key_;
+
+    ///< 实际挂载成功的前端目录（空 = 未找到，纯 API 模式）
+    std::string frontend_dir_;
 
     std::unique_ptr<Impl> impl_;
 };

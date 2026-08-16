@@ -608,9 +608,13 @@ std::string AIQueryDispatcher::answerPrompt(const std::string &device_id,
 
     std::ostringstream ss;
     ss << std::fixed << std::setprecision(2);
-    ss << "You are an IoT environment monitoring assistant.\n"
-       << "Answer the user's question using the sensor data below.\n"
-       << "Reply in English, 1-3 sentences. Be concise and data-driven.\n\n";
+    // 这条回答只进浏览器，不进 OLED —— 屏幕上的文字走的是独立的
+    // oled: 命令通道，那里才有 ASCII 限制。所以这里直接输出中文，
+    // 不必先英文再由前端做词典替换（那会得到半中半英的句子）。
+    ss << "你是一个物联网环境监测助手。\n"
+       << "根据下面的传感器数据回答用户的问题。\n"
+       << "用中文回答，1-3 句话，简洁、以数据为依据。\n"
+       << "引用具体数值，不要编造数据里没有的信息。\n\n";
 
     ss << "Device: " << device_id << "\n\n";
 

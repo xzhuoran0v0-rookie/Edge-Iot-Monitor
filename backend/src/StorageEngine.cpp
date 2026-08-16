@@ -271,6 +271,83 @@ bool StorageEngine::insertAnalysisLog(const std::string &device_id,
     return true;
 }
 
+bool StorageEngine::getLatestEdgeAssessment(const std::string &device_id,
+                                            EdgeAssessment &out)
+{
+    static constexpr const char *kSql =
+        "SELECT device_id, state, severity, confidence, reason_code, reason, timestamp "
+        "FROM edge_assessments WHERE device_id = ? "
+        "ORDER BY id DESC LIMIT 1;";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_text(stmt, 1, device_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_ROW)
+    {
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    // NULL 列在 sqlite3_column_text 下返回 nullptr，直接构造 std::string 是 UB
+    auto text = [stmt](int col) -> std::string {
+        const unsigned char *v = sqlite3_column_text(stmt, col);
+        return v ? reinterpret_cast<const char *>(v) : "";
+    };
+
+    out.device_id = text(0);
+    out.state = text(1);
+    out.severity = text(2);
+    out.confidence = sqlite3_column_double(stmt, 3);
+    out.reason_code = text(4);
+    out.reason = text(5);
+    out.timestamp = text(6);
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool StorageEngine::insertEdgeAssessment(const EdgeAssessment &a)
+{
+    // 去重：状态没变就不写，表里只留状态变迁点
+    EdgeAssessment latest;
+    if (getLatestEdgeAssessment(a.device_id, latest) &&
+        latest.state == a.state &&
+        latest.severity == a.severity &&
+        latest.reason_code == a.reason_code)
+    {
+        return true;
+    }
+
+    static constexpr const char *kSql =
+        "INSERT INTO edge_assessments "
+        "(device_id, state, severity, confidence, reason_code, reason, timestamp) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?);";
+
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, kSql, -1, &stmt, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "[Storage] prepare edge assessment failed: "
+                  << sqlite3_errmsg(db_) << std::endl;
+        return false;
+    }
+
+    const std::string ts = !a.timestamp.empty() ? a.timestamp : nowIso8601Utc();
+    sqlite3_bind_text(stmt, 1, a.device_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, a.state.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, a.severity.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 4, a.confidence);
+    sqlite3_bind_text(stmt, 5, a.reason_code.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, a.reason.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, ts.c_str(), -1, SQLITE_TRANSIENT);
+
+    const int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
 bool StorageEngine::enqueueDeviceCommand(const std::string &device_id,
                                          const std::string &command,
                                          int duration_ms,
