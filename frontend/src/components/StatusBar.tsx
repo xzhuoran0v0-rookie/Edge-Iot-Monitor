@@ -1,22 +1,23 @@
-import type { DeviceStatus } from "../types";
-
 interface Props {
-  status: DeviceStatus;
+  /** The dashboard reached the backend on the last poll. */
+  backendReachable: boolean;
+  /** The device is still reporting (derived server-side from the last reading). */
+  deviceOnline: boolean;
 }
 
-const labels: Record<string, string> = {
-  wifi: "WiFi",
-  mqtt: "MQTT",
-  backend: "后端",
-  ntp: "NTP",
-};
-
-export default function StatusBar({ status }: Props) {
-  const items = (["wifi", "mqtt", "backend", "ntp"] as const).map((key) => ({
-    key,
-    label: labels[key],
-    ok: status[key],
-  }));
+/**
+ * Only states the system can actually observe are shown.
+ *
+ * Wi-Fi / MQTT / NTP live on the device and are not part of the ingest payload,
+ * so the dashboard has no way to know them. Displaying a green pill for a link
+ * nobody measured is worse than showing nothing — surfacing them needs a status
+ * field in the firmware's report first.
+ */
+export default function StatusBar({ backendReachable, deviceOnline }: Props) {
+  const items = [
+    { key: "backend", label: "后端服务", ok: backendReachable },
+    { key: "device", label: "设备上报", ok: deviceOnline },
+  ];
 
   return (
     <div className="status-grid">
@@ -26,12 +27,6 @@ export default function StatusBar({ status }: Props) {
           {item.label}
         </span>
       ))}
-      {status.drift_alert && (
-        <span className="status-pill err">
-          <span className="status-dot" />
-          传感器漂移
-        </span>
-      )}
     </div>
   );
 }

@@ -1,13 +1,15 @@
-import type { SensorReading } from "../types";
+import type { SeriesPoint } from "../types";
 
 interface Props {
-  data: SensorReading[];
+  data: SeriesPoint[];
   color: string;
   height?: number;
 }
 
 export default function MiniChart({ data, color, height = 120 }: Props) {
-  if (data.length < 2) return null;
+  if (data.length < 2) {
+    return <div className="chart-empty">等待足够的数据点…</div>;
+  }
 
   const values = data.map((d) => d.value);
   const min = Math.min(...values);

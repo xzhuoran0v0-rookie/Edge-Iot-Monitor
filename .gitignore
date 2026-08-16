@@ -58,6 +58,12 @@ secrets.yaml
 *.sql.gz
 dump_*.sql
 
+# --- Frontend (Node / Vite) ---
+node_modules/
+.vite/
+frontend/.vite/
+*.tsbuildinfo
+
 # --- Python ---
 __pycache__/
 *.pyc

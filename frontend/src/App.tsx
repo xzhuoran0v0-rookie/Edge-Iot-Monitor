@@ -1,8 +1,11 @@
-import { mockTemp, mockHum, mockStatus, mockReasoning } from "./mock";
-import { enToZh } from "./dict";
+import { useEffect, useRef, useState } from "react";
+import type { ReadingsSnapshot } from "./types";
+import { fetchReadings, POLL_INTERVAL_MS } from "./api";
 import StatusBar from "./components/StatusBar";
 import MiniChart from "./components/MiniChart";
-import OledPrompt from "./components/OledPrompt";
+import EdgeCard from "./components/EdgeCard";
+import DeviceControl from "./components/DeviceControl";
+import DataQa from "./components/DataQa";
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString("zh-CN", {
@@ -12,15 +15,51 @@ function formatTime(iso: string): string {
   });
 }
 
-const trendLabel: Record<string, string> = {
-  stable: "稳定",
-  rising: "上升",
-  falling: "下降",
-};
+function latestOf(snapshot: ReadingsSnapshot, key: string): number | null {
+  const points = snapshot.series[key]?.points;
+  if (!points || points.length === 0) return null;
+  return points[points.length - 1].value;
+}
 
 export default function App() {
-  const latestTemp = mockTemp[mockTemp.length - 1];
-  const latestHum = mockHum[mockHum.length - 1];
+  const [snapshot, setSnapshot] = useState<ReadingsSnapshot | null>(null);
+  const [reachable, setReachable] = useState(true);
+  const [loading, setLoading] = useState(true);
+  // Keep the last good snapshot on screen through a transient failure; the
+  // status pill goes red, but the charts do not blank out and come back.
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    const controller = new AbortController();
+
+    async function poll() {
+      try {
+        const data = await fetchReadings(undefined, 120, controller.signal);
+        if (!mounted.current) return;
+        setSnapshot(data);
+        setReachable(true);
+      } catch (err) {
+        if (!mounted.current || controller.signal.aborted) return;
+        setReachable(false);
+      } finally {
+        if (mounted.current) setLoading(false);
+      }
+    }
+
+    poll();
+    const timer = setInterval(poll, POLL_INTERVAL_MS);
+    return () => {
+      mounted.current = false;
+      controller.abort();
+      clearInterval(timer);
+    };
+  }, []);
+
+  const temp = snapshot ? latestOf(snapshot, "temperature") : null;
+  const hum = snapshot ? latestOf(snapshot, "humidity") : null;
+  const tempPoints = snapshot?.series.temperature?.points ?? [];
+  const humPoints = snapshot?.series.humidity?.points ?? [];
 
   return (
     <div className="app">
@@ -29,65 +68,84 @@ export default function App() {
         <span className="subtitle">ESP32-S3 · SHT30 · 边缘推理</span>
       </header>
 
-      {/* Row 1: live values + device status */}
-      <div className="grid">
-        <div className="card">
-          <div className="card-title">实时数据</div>
-          <div className="stat-row">
-            <div className="stat">
-              <span className="stat-value">{latestTemp.value}°C</span>
-              <span className="stat-label">温度</span>
-            </div>
-            <div className="stat">
-              <span className="stat-value">{latestHum.value}%</span>
-              <span className="stat-label">湿度</span>
-            </div>
-          </div>
-          <div className="timestamp" style={{ marginTop: 12 }}>
-            更新于 {formatTime(latestTemp.server_timestamp)}
-          </div>
+      {!reachable && (
+        <div className="banner banner-error">
+          无法连接后端服务，显示的是最后一次成功获取的数据。
         </div>
+      )}
 
-        <div className="card">
-          <div className="card-title">设备状态</div>
-          <StatusBar status={mockStatus} />
-          <div className="timestamp" style={{ marginTop: 12 }}>
-            {mockStatus.online ? "设备在线" : "设备离线"} · 最后上报{" "}
-            {formatTime(mockStatus.last_seen)}
-          </div>
-        </div>
-      </div>
-
-      {/* Row 2: charts */}
-      <div className="grid">
-        <div className="card">
-          <div className="card-title">温度趋势（60 分钟）</div>
-          <MiniChart data={mockTemp} color="#2563eb" />
-        </div>
-        <div className="card">
-          <div className="card-title">湿度趋势（60 分钟）</div>
-          <MiniChart data={mockHum} color="#16a34a" />
-        </div>
-      </div>
-
-      {/* Row 3: edge reasoning */}
-      <div className="grid">
+      {loading ? (
         <div className="card grid-full">
-          <div className="card-title">边缘推理</div>
-          <div className="reasoning-message">{enToZh(mockReasoning.message)}</div>
-          <div className="reasoning-meta">
-            <span>基线温度 {mockReasoning.baseline_temp}°C</span>
-            <span>基线湿度 {mockReasoning.baseline_hum}%</span>
-            <span className={`trend-badge ${mockReasoning.trend}`}>
-              {trendLabel[mockReasoning.trend]}
-            </span>
-            <span>{formatTime(mockReasoning.timestamp)}</span>
-          </div>
+          <div className="reasoning-message muted">正在读取设备数据…</div>
         </div>
-      </div>
+      ) : (
+        <>
+          {/* Row 1: live values + device status */}
+          <div className="grid">
+            <div className="card">
+              <div className="card-title">实时数据</div>
+              <div className="stat-row">
+                <div className="stat">
+                  <span className="stat-value">
+                    {temp !== null ? `${temp.toFixed(1)}°C` : "—"}
+                  </span>
+                  <span className="stat-label">温度</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-value">
+                    {hum !== null ? `${hum.toFixed(1)}%` : "—"}
+                  </span>
+                  <span className="stat-label">湿度</span>
+                </div>
+              </div>
+              <div className="timestamp" style={{ marginTop: 12 }}>
+                {snapshot?.last_seen
+                  ? `更新于 ${formatTime(snapshot.last_seen)}`
+                  : "尚无数据"}
+              </div>
+            </div>
 
-      {/* Row 4: OLED prompt */}
-      <OledPrompt />
+            <div className="card">
+              <div className="card-title">设备状态</div>
+              <StatusBar
+                backendReachable={reachable}
+                deviceOnline={snapshot?.online ?? false}
+              />
+              <div className="timestamp" style={{ marginTop: 12 }}>
+                {snapshot?.online ? "设备在线" : "设备离线"}
+                {snapshot?.last_seen
+                  ? ` · 最后上报 ${formatTime(snapshot.last_seen)}`
+                  : ""}
+              </div>
+            </div>
+          </div>
+
+          {/* Row 2: charts */}
+          <div className="grid">
+            <div className="card">
+              <div className="card-title">温度趋势</div>
+              <MiniChart data={tempPoints} color="#2563eb" />
+            </div>
+            <div className="card">
+              <div className="card-title">湿度趋势</div>
+              <MiniChart data={humPoints} color="#16a34a" />
+            </div>
+          </div>
+
+          {/* Row 3: on-device reasoning */}
+          <div className="grid">
+            <EdgeCard edge={snapshot?.edge ?? null} />
+          </div>
+
+          {/* Row 4: command downlink */}
+          <div className="grid">
+            <DeviceControl />
+          </div>
+
+          {/* Row 5: data Q&A */}
+          <DataQa />
+        </>
+      )}
     </div>
   );
 }
