@@ -1,278 +1,116 @@
-# LLM Reasoning
+# LLM Narration
 
-This document defines how LLM reasoning fits into the cloud-based intelligent environment monitoring system.
+The LLM in this project explains. It does not decide.
 
-The LLM is not a chatbot in this project. It is a cloud-side risk analysis module.
+That is not a limitation worked around — it is the design. Detection is
+deterministic and has already acted before the model is ever called. The model's
+only job is to turn a state change into a sentence a person can read.
 
-## Position in the System
-
-```text
-IoTDA forwarded sensor data
-  -> cloud analysis service
-  -> primary cloud LLM API
-  -> local Ollama backup if needed
-  -> rule fallback if needed
-  -> validated risk decision
-  -> IoTDA command downlink
-```
-
-ESP32-S3 does not run LLM inference. It only receives the final IoTDA command and controls buzzer/GPIO.
-
-## Reasoning Priority
+## Position in the system
 
 ```text
-1. Cloud LLM API
-2. Local Ollama backup
-3. Rule threshold fallback
+ESP32-S3 decides            <- deterministic, on-chip, no network
+  -> backend stores the verdict
+  -> IQR flags outliers     <- deterministic, server-side
+  -> [state changed?]
+       -> LLM narrates it   <- optional, explains only
+  -> dashboard displays
 ```
 
-Primary cloud LLM options:
+Nothing downstream of the model reads its output as a command. There is no code
+path that turns model text into an alert, a GPIO change, or an IoTDA command.
+The prompt states this to the model directly:
 
-- DeepSeek
-- Tongyi
-- Pangu
-- OpenAI
+> You do NOT control alarms. Alarms are handled deterministically and have
+> already acted before you see this.
 
-Local backup:
+Telling the model its output is not load-bearing has a practical effect: it
+stops hedging and stops inflating severity to be safe, because being wrong
+cannot cause harm. It writes what the numbers say.
 
-- Ollama running on a local server, edge gateway, or competition demo laptop
+## Narrate on change, never on a count
 
-The backup design is useful for demo reliability, but Ollama should not become an ESP32-S3 responsibility.
+Earlier this fired every N records. That re-analysed identical steady-state
+data forever: the model could only repeat its own input back, and it burned API
+quota doing it.
 
-## What the LLM Should Analyze
+Narration now fires only on a state change:
 
-The LLM should analyze:
-
-- Recent temperature trend.
-- Recent humidity trend.
-- Whether values are abnormal.
-- Whether data shows continuous rise, continuous drop, or sudden fluctuation.
-- Possible environmental causes.
-- Risk level.
-- Suggested handling.
-- Whether a buzzer alert is recommended.
-
-The LLM should not:
-
-- Talk to the user as a chatbot.
-- Generate arbitrary device commands.
-- Directly control GPIO.
-- Replace deterministic safety rules.
-
-## Internal Input to LLM
-
-The cloud service may send the recent sensor window to the LLM in an internal format like this:
-
-```json
-[
-  {
-    "time": "10:00:00",
-    "temperature": 27.8,
-    "humidity": 68.2
-  },
-  {
-    "time": "10:00:10",
-    "temperature": 28.4,
-    "humidity": 72.5
-  },
-  {
-    "time": "10:00:20",
-    "temperature": 29.1,
-    "humidity": 78.6
-  },
-  {
-    "time": "10:00:30",
-    "temperature": 30.2,
-    "humidity": 84.1
-  }
-]
-```
-
-This is not the ESP32-S3 to IoTDA property report format. It is only an internal cloud service to LLM payload.
-
-## Prompt Template
-
-```text
-You are the cloud risk analysis module for an IoT environment monitoring system.
-
-Your task is not to chat. Assess environmental risk from the recent temperature and humidity readings.
-
-Follow these rules:
-1. Determine whether the temperature or humidity is abnormal.
-2. Detect sustained increases, sustained decreases, or sharp fluctuations.
-3. Explain likely causes in the context of environment monitoring.
-4. Return one risk level: normal, low, medium, high, or critical.
-5. Provide one or two recommended actions.
-6. Decide whether the buzzer alarm should be triggered.
-7. Return JSON only, without Markdown or additional explanation.
-8. Write every human-readable text field in concise English using ASCII characters only. Do not output Chinese or other non-ASCII characters.
-
-Risk guidelines:
-- Temperature > 35 C: high-temperature risk
-- Humidity > 80 %RH: high-humidity risk
-- Sustained humidity increase: possible condensation, water leakage, or poor ventilation
-- Sharp short-term temperature or humidity changes: possible sensor fault or sudden environmental change
-- Temperature > 40 C or humidity > 90 %RH: critical risk
-
-Recent environment readings:
-{{recent_sensor_data}}
-
-Return JSON in the following format:
-{
-  "risk_level": "normal | low | medium | high | critical",
-  "risk_score": 0,
-  "abnormal_reason": "",
-  "trend_analysis": "",
-  "suggestions": [],
-  "alarm_required": false,
-  "buzzer_value": "0 | 1",
-  "buzzer_pattern": "none | slow_beep | fast_beep | continuous"
-}
-```
-
-## Expected LLM Output
-
-```json
-{
-  "risk_level": "high",
-  "risk_score": 82,
-  "abnormal_reason": "Humidity is rising above 80 %RH, creating moisture and condensation risk.",
-  "trend_analysis": "Humidity rose from 68.2 %RH to 84.1 %RH in 30 seconds.",
-  "suggestions": [
-    "Check for moisture or water leaks near the device.",
-    "Improve ventilation and keep the sensor away from damp areas."
-  ],
-  "alarm_required": true,
-  "buzzer_value": "1",
-  "buzzer_pattern": "fast_beep"
-}
-```
-
-## Output Validation
-
-The cloud analysis service must validate the LLM result before sending any command.
-
-Required checks:
-
-| Field | Rule |
+| Trigger | Cooldown applies? |
 |---|---|
-| `risk_level` | Must be `normal`, `low`, `medium`, `high`, or `critical` |
-| `risk_score` | Must be 0 to 100 |
-| `alarm_required` | Must be boolean |
-| `buzzer_value` | Must be `0` or `1` |
-| `buzzer_pattern` | Must be allowlisted |
-| `suggestions` | Should be short and display-safe |
+| First report from a device (baseline) | No |
+| IQR anomaly detector flagged the batch | Yes |
+| Crossed a warn-band edge, in either direction | No |
+| Drifted ≥ `temp_delta_c` / `humidity_delta` since the **last narration** | Yes |
 
-Invalid LLM output should not control the device. Use rule fallback instead.
+Two details that matter:
 
-## Convert Reasoning Result to IoTDA Command
+**Band crossings bypass the cooldown, anomalies do not.** Band state is latched,
+so a crossing fires once on entry and once on exit — sustained heat cannot
+re-trigger it. An IQR anomaly is different: after a genuine level shift, IQR
+flags every subsequent reading until the sliding window refills. Without the
+cooldown that stretch becomes a wall of narration.
 
-LLM output is internal to the cloud service. The final downlink to ESP32-S3 must use Huawei Cloud IoTDA command format.
+**Drift is measured from the last narration, not the last reading.** Otherwise a
+slow ramp never trips a per-reading threshold and is never mentioned at all.
 
-Example final command:
+Steady state produces no call and therefore costs nothing.
 
-```json
-{
-  "command_name": "BuzzerControl",
-  "service_id": "Alarm",
-  "paras": {
-    "value": "1",
-    "duration_ms": 3000,
-    "pattern": "fast_beep"
-  }
-}
-```
+## What the model receives
 
-The device receives this command from:
+Aggregated statistics, not raw rows: per sensor type, the latest value, min,
+max, mean, net change, sample count, the window span, and the **rate per
+minute**.
 
-```text
-$oc/devices/{device_id}/sys/commands/#
-```
+The rate is the point. Without it the model cannot distinguish "8 °C over two
+hours" from "8 °C over eight seconds" — the first is routine, the second is not
+physically plausible for room air and usually means someone touched the sensor.
 
-Then it responds through:
+The prompt also lists what the system already does, so the model does not
+recommend adding a median filter to a device that has had one all along.
 
-```text
-$oc/devices/{device_id}/sys/commands/response/request_id={request_id}
-```
+## Output
 
-## Local Ollama Backup
-
-Ollama can be kept as a backup reasoning engine.
-
-Recommended positioning:
-
-```text
-Cloud LLM unavailable
-  -> cloud analysis service calls local Ollama
-  -> if Ollama succeeds, validate output
-  -> convert to IoTDA command
-```
-
-Ollama may run on:
-
-- Local server
-- Edge gateway
-- Competition demo laptop
-
-Ollama should not run on:
-
-- ESP32-S3
-- Sensor firmware
-
-Recommended competition wording:
-
-```text
-The system uses a cloud LLM API for intelligent environment risk analysis by default. If the cloud LLM service is unavailable, the network fails, or an API call cannot be completed, the system can switch to a local Ollama model as its backup analysis engine. This preserves basic intelligent analysis and alarm decisions. Ollama runs on a local server or edge gateway, not on the ESP32-S3 device.
-```
-
-## Security Boundaries
-
-- LLM API keys must stay in cloud environment variables.
-- ESP32-S3 must not store LLM API keys.
-- ESP32-S3 must not call cloud LLM APIs directly.
-- ESP32-S3 must not run Ollama.
-- IoTDA property reports must use the official `services` structure.
-- IoTDA command downlink must use the official command structure.
-- LLM output must be validated before command generation.
-- Real secrets must not be printed in logs.
-
-## Related IoTDA Formats
-
-Device property report topic:
-
-```text
-$oc/devices/{device_id}/sys/properties/report
-```
-
-Device property report body:
+Strict JSON, ASCII only — the OLED has no font for anything else:
 
 ```json
 {
-  "services": [
-    {
-      "service_id": "Environment",
-      "properties": {
-        "temperature": 28.6,
-        "humidity": 72.3
-      }
-    }
-  ]
+  "situation": "one sentence: what is happening, with numbers",
+  "severity": "normal | watch | concern | urgent",
+  "explanation": "2-3 sentences: why the data looks this way",
+  "suggested_action": "what a person should do, or 'none'",
+  "verdict": "max 20 chars, for a small display"
 }
 ```
 
-Command downlink body:
+`severity` here describes the situation for a human reader. It triggers nothing.
+The device's own `severity` is the one that matters, and it was computed on the
+chip.
 
-```json
-{
-  "command_name": "BuzzerControl",
-  "service_id": "Alarm",
-  "paras": {
-    "value": "1"
-  }
-}
-```
+## Backends
 
-Official references:
+| Priority | Backend | Notes |
+|---|---|---|
+| 1 | DeepSeek (`/chat/completions`, OpenAI-compatible) | Used when `deepseek.enabled` and an API key is present |
+| 2 | Local Ollama | Automatic fallback on any cloud failure |
+| — | None | Narration is skipped; **no alert is affected** |
 
-- Huawei Cloud IoTDA device property report: https://support.huaweicloud.com/api-iothub/iot_06_v5_3010.html
-- Huawei Cloud IoTDA platform command downlink: https://support.huaweicloud.com/api-iothub/iot_06_v5_3014.html
+The fallback chain is about keeping the *explanation* available. It is not a
+safety mechanism, because the safety mechanism is on the device and never
+involved a model.
+
+Configure in `config/config.yaml`; `DEEPSEEK_API_KEY` in the environment takes
+priority over the file. `ai.enabled: false` disables narration entirely.
+
+## Key handling
+
+The API key lives only in server config or a server environment variable. The
+ESP32-S3 has no key — not because it is withheld, but because the device never
+calls a model at all. There is nothing on the device to extract.
+
+## Data Q&A
+
+`POST /api/prompt` answers free-text questions about recent readings. It is a
+convenience feature for the dashboard, outside the monitoring path entirely.
+Note that it currently runs synchronously on the request thread and is not
+covered by `ai.enabled`.

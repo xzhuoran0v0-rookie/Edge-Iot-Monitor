@@ -1,138 +1,168 @@
 # Edge IoT Monitor
 
-Edge IoT Monitor is a competition-oriented intelligent environment monitoring and alerting system. It uses an ESP32-S3 with an SHT30 temperature and humidity sensor, OLED display, and buzzer, then connects the device to Huawei Cloud IoTDA for cloud-based data ingestion, LLM-assisted risk reasoning, and command-based alert control.
+An environment monitoring system whose intelligence runs **on the device**.
 
-The project direction is no longer a local chatbot on embedded hardware. The ESP32-S3 focuses on sensing and execution, while cloud services handle device access, data forwarding, LLM reasoning, and downlink commands.
+An ESP32-S3 with an SHT30 sensor learns what "normal" means in the room it is
+installed in, and decides for itself — in deterministic code, with no network
+call anywhere in the decision path — whether conditions have changed. Huawei
+Cloud IoTDA and a local C++ service carry that decision outward. A language
+model is available to explain it in plain language, and is never asked what to
+conclude.
 
 ```text
-ESP32-S3 + SHT30
-  -> Huawei Cloud IoTDA
-  -> Cloud analysis service
-  -> Cloud LLM API, with local Ollama as backup
-  -> IoTDA command downlink
-  -> ESP32-S3 buzzer / OLED alert
+SHT30
+  -> 1 Hz safety task            fixed hard limits, independent of everything
+  -> median filter
+  -> AdaptiveBaseline            learns this room's normal range, persisted to NVS
+  -> EdgeReasoner                12-sample window, thresholds + per-minute rates
+  -> EdgeAssessment              {state, severity, confidence, reason}
+       |
+       +-> OLED                  immediate, works with no network
+       +-> Huawei Cloud IoTDA    MQTT property report
+       +-> local backend         SQLite, IQR, web dashboard
+             +-> LLM narration   explains a state change; decides nothing
 ```
 
-## Project Goal
+Pull the Wi-Fi and the device keeps assessing correctly. That is the point of
+the architecture, and it demonstrates in five seconds.
 
-Build a closed-loop cloud intelligent monitoring system:
+## Why not decide in the cloud
 
-- Collect temperature and humidity from SHT30.
-- Report device properties to Huawei Cloud IoTDA using the official device-side MQTT format.
-- Forward IoTDA data to a cloud analysis service.
-- Use a cloud LLM to analyze recent environmental trends and risk.
-- Keep local Ollama as a backup reasoning engine, not as the main device-side design.
-- Downlink alert commands through IoTDA.
-- Let ESP32-S3 control buzzer/GPIO and display state on OLED.
+A cloud-decides design makes every alert depend on connectivity, on a platform,
+on an API quota, and on a model returning parseable output. Each is a way for an
+alert not to happen — and they fail exactly when a monitor is least able to
+afford it.
+
+Deciding on the chip costs one ring buffer and a handful of comparisons every
+10 seconds. In exchange:
+
+| | On-device | Cloud-decides |
+|---|---|---|
+| Works with no network | Yes | No |
+| Hard-limit latency | 1 s | Round trip + inference |
+| Cost per decision | Zero | Per API call |
+| Credential on device | None needed | Key or token |
+| Adapts to the room | Yes, bounded by hard limits | Depends on the prompt |
 
 ## Hardware
 
-| Component | Role |
-|---|---|
-| ESP32-S3 | Wi-Fi device, sensor acquisition, IoTDA connection, command execution |
-| SHT30 | Temperature and humidity sensing |
-| OLED | Local reading, network, and alert status display |
-| Buzzer | Audible alert output controlled by GPIO |
+| Component | Role | Connection |
+|---|---|---|
+| ESP32-S3 | Sampling, reasoning, OLED, Wi-Fi/MQTT, GPIO | — |
+| SHT30 | Temperature and humidity | `Wire`, SDA 17 / SCL 18, addr `0x44` |
+| OLED | Readings, verdict, link status | `Wire1`, SDA 38 / SCL 39, addr `0x3C` |
+| Buzzer | Audible alert — **disabled by default** | GPIO 4, active-low |
 
-See [hardware.md](docs/hardware.md) for wiring and device-side responsibilities.
+The sensor and display sit on **separate I²C buses**, so a hung display cannot
+stall the 1 Hz safety task. See [hardware.md](docs/hardware.md) before wiring.
 
-## Architecture
+## Documentation
 
-The recommended competition architecture is:
+- [edge_reasoning.md](docs/edge_reasoning.md) — **the core**: how the device decides
+- [architecture.md](docs/architecture.md) — layers, responsibilities, implementation status
+- [data_flow.md](docs/data_flow.md) — end-to-end path and failure behaviour
+- [backend_service.md](docs/backend_service.md) — backend modules and full HTTP API
+- [hardware.md](docs/hardware.md) — wiring, firmware variants, configuration
+- [cloud_iotda.md](docs/cloud_iotda.md) — IoTDA topics, product model, commands
+- [llm_reasoning.md](docs/llm_reasoning.md) — the narration layer
+- [competition_writeup.md](docs/competition_writeup.md) — presentation wording
 
-```text
-ESP32-S3
-  -> MQTT/MQTTS property report
-  -> Huawei Cloud IoTDA
-  -> data forwarding
-  -> FunctionGraph / ECS / container service
-  -> LLM risk reasoning
-  -> IoTDA command downlink
-  -> buzzer alert
-```
+## Quick start (no hardware needed)
 
-Detailed documents:
-
-- [architecture.md](docs/architecture.md): system overview
-- [cloud_iotda.md](docs/cloud_iotda.md): Huawei Cloud IoTDA topics, product model, property report, and command downlink
-- [llm_reasoning.md](docs/llm_reasoning.md): LLM prompt, risk reasoning, cloud API, and Ollama backup
-- [backend_service.md](docs/backend_service.md): cloud analysis service responsibilities
-- [data_flow.md](docs/data_flow.md): end-to-end data and command flow
-- [competition_writeup.md](docs/competition_writeup.md): competition-ready wording
-
-## Current Repository Status
-
-The repository still contains a working local prototype:
-
-| Area | Current state |
-|---|---|
-| Firmware | PlatformIO + Arduino prototype for Wi-Fi, SHT30, OLED, HTTP ingest, and command polling |
-| Backend | C++ HTTP service with ingest, SQLite storage, anomaly detection, and local command queue |
-| Local LLM | Optional Ollama analysis for local backup reasoning |
-| Cloud integration | Being redesigned around Huawei Cloud IoTDA and cloud LLM reasoning |
-
-The existing local backend is useful as a fallback and development harness. The competition architecture should present IoTDA as the primary device access and command channel.
-
-## Local Prototype Quick Start
-
-Create local backend config:
+Everything below runs on a laptop with nothing powered on.
 
 ```bash
 cp config/config.example.yaml config/config.yaml
 ```
 
-Build and run the backend:
+Build and run the backend from the repository root:
 
 ```bash
-cmake -S . -B build-cmake -DEDGE_BUILD_SERVER=ON
-cmake --build build-cmake
+cmake -S . -B build-cmake -DEDGE_BUILD_SERVER=ON && cmake --build build-cmake
+```
+
+```bash
 ./build-cmake/backend/edge_server
 ```
 
-Send simulated readings:
+Feed it simulated readings. The simulator includes a Python port of the
+firmware's `EdgeReasoner`, so the payloads match what a real board sends:
 
 ```bash
-python3 scripts/simulate_sensor.py --device esp32s3-001 --count 10
+python3 scripts/simulate_sensor.py --interval 2
 ```
 
-Run backend smoke test:
+Open <http://localhost:8080> for the live dashboard.
+
+To demonstrate a state the simulator does not reach on its own:
+
+```bash
+python3 scripts/simulate_sensor.py --force-edge-state HARD_LIMIT
+```
+
+Run the backend smoke tests:
 
 ```bash
 python3 scripts/test_backend_api.py
 ```
 
-## Firmware Setup
+## Frontend development
 
-Install PlatformIO if needed:
+The backend serves the built dashboard from `frontend/dist`. For live reload:
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+Vite proxies `/api` to `localhost:8080`. Rebuild with `npm run build` before
+committing — `frontend/dist` is checked in so the backend can serve it standalone.
+
+## Firmware
 
 ```bash
 python3 -m pip install --user -r requirements-dev.txt
 ```
 
-Build firmware:
-
 ```bash
-cd firmware
-pio run
+cp firmware/combined/src/config.example.h firmware/combined/src/config.h
 ```
 
-Create local firmware config before flashing:
-
 ```bash
-cp src/config.example.h src/config.h
+cd firmware/combined && pio run
 ```
 
-`src/config.h` is local and sensitive. Do not commit Wi-Fi credentials, IoTDA secrets, or API keys.
+`firmware/combined` is the full system. `firmware/iotda_mvp` is a minimal IoTDA
+activation test, and `firmware/src` is an earlier local-only prototype.
 
-## Security Boundaries
+`config.h` holds the Wi-Fi password, the IoTDA device secret, and the backend
+URL. It is gitignored and must stay that way.
 
-- Do not put LLM API keys in ESP32 firmware.
-- Do not let ESP32-S3 call DeepSeek, Tongyi, Pangu, or OpenAI directly.
-- Do not run Ollama on ESP32-S3.
-- Do not invent custom IoTDA outer JSON formats.
-- Do not expose device GPIO control directly to the public network.
-- Validate LLM output before converting it into IoTDA commands.
-- Keep real credentials in local config or cloud environment variables only.
+## Implementation status
+
+| Component | Status |
+|---|---|
+| On-device reasoning, baseline learning, safety task | Implemented, host-tested |
+| OLED display | Implemented |
+| IoTDA MQTT property report | Implemented; needs registered device credentials |
+| Backend ingest, storage, IQR, command queue, dashboard API | Implemented |
+| Web dashboard | Implemented |
+| LLM narration | Implemented, disabled by default |
+| Backend → IoTDA command downlink (`CloudSync`) | **Not implemented** — skeleton only |
+| Buzzer output | **Disabled by default** — pending hardware verification |
+
+## Security boundaries
+
+- The decision path contains no network call, no cloud dependency, and no model.
+- Hard safety limits are immutable; adaptive bands are clamped inside them and
+  cannot widen them.
+- The ESP32-S3 stores no LLM API key — it never calls a model.
+- Device commands are allowlisted with a bounded duration; no arbitrary GPIO
+  control is exposed.
+- Ingest enforces a device allowlist; the command API can require a key.
+- Real credentials live only in `config/config.yaml`, `config.h`, or server
+  environment variables. None of these are committed — and none of them belong
+  in a submission archive either.
+- LLM output is never converted into a command.
 
 ## License
 

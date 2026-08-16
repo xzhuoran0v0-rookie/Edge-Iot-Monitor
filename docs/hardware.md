@@ -1,89 +1,127 @@
 # Hardware Design
 
-This document describes the edge device part of the project.
+The edge device. It runs the entire decision path — sensing, filtering, baseline
+learning, assessment, and display — without network involvement.
 
-The ESP32-S3 is not responsible for LLM inference. It only handles sensing, display, cloud connection, command reception, and physical alert execution.
+It runs no language model, and holds no API key, because it never calls one.
 
-## Hardware Components
+## Components
 
-| Component | Role |
+| Component | Role | Connection |
+|---|---|---|
+| ESP32-S3 | Controller: sampling, reasoning, OLED, Wi-Fi, MQTT/MQTTS, GPIO | — |
+| SHT30 | Temperature and humidity sensing | `Wire`, SDA 17 / SCL 18, addr `0x44` |
+| OLED | Readings, device verdict, link status | `Wire1`, SDA 38 / SCL 39, addr `0x3C` |
+| Buzzer | Audible alert (**disabled by default**, see below) | GPIO 4, active-low |
+
+## Device responsibilities
+
+Implemented in `firmware/combined`:
+
+- Sample the SHT30 over I²C on a dedicated 1 Hz FreeRTOS task.
+- Check fixed hard limits on every sample, independent of network state.
+- Median-filter readings before they reach the reasoning layers.
+- Learn and persist an adaptive baseline (NVS namespace `envbaseline`).
+- Assess a 12-sample window and produce an `EdgeAssessment`.
+- Render readings, verdict, and link status on the OLED carousel.
+- Publish to Huawei Cloud IoTDA over MQTT/MQTTS as a property report.
+- POST the same assessment to the local backend, with exponential backoff.
+- Poll and acknowledge allowlisted device commands.
+- Keep NTP time synchronised, retrying every 5 minutes.
+
+See [edge_reasoning.md](edge_reasoning.md) for the reasoning layers.
+
+## Firmware variants
+
+| Path | Purpose |
 |---|---|
-| ESP32-S3 | Main controller, Wi-Fi, MQTT/MQTTS, GPIO control |
-| SHT30 | Temperature and humidity sensor |
-| OLED | Local display for readings and alert state |
-| Buzzer | Audible warning output |
+| `firmware/combined` | **The full system.** Edge reasoning + IoTDA + local backend. Use this one. |
+| `firmware/iotda_mvp` | Minimal IoTDA MQTT activation test |
+| `firmware/src` | Earlier local-backend-only prototype |
 
-## Device-Side Responsibilities
+## I²C wiring
 
-ESP32-S3 should implement:
+**The sensor and the display are on two separate I²C buses.** They do not share
+one. Wiring them to a common bus will not work with this firmware.
 
-- Read temperature and humidity from SHT30 through I2C.
-- Apply simple smoothing or median filtering if needed.
-- Connect to Wi-Fi.
-- Connect to Huawei Cloud IoTDA through MQTT/MQTTS.
-- Report sensor readings as IoTDA device properties.
-- Subscribe to IoTDA command topics.
-- Parse downlink commands.
-- Control buzzer/GPIO according to the command.
-- Display readings, connection state, and alert state on OLED.
-- Return command execution result to IoTDA.
-
-## Recommended I2C Wiring
-
-Typical wiring:
+| Device | Bus | SDA | SCL | Address | Defined in |
+|---|---|---|---|---|---|
+| SHT30 | `Wire` | GPIO 17 | GPIO 18 | `0x44` (falls back to `0x45`) | `sht30.h` |
+| OLED | `Wire1` | GPIO 38 | GPIO 39 | `0x3C` | `oled.h` |
 
 ```text
-ESP32-S3        SHT30          OLED
-3.3V      ->    VIN       ->    VCC
-GND       ->    GND       ->    GND
-SDA       ->    SDA       ->    SDA
-SCL       ->    SCL       ->    SCL
+ESP32-S3                SHT30              OLED
+3.3V              ->    VIN          3.3V ->  VCC
+GND               ->    GND          GND  ->  GND
+GPIO 17 (SDA)     ->    SDA
+GPIO 18 (SCL)     ->    SCL
+GPIO 38 (SDA1)                            ->  SDA
+GPIO 39 (SCL1)                            ->  SCL
 ```
 
-Use the actual SDA and SCL pins defined in your firmware and board configuration.
+Separate buses keep a hung display from taking the sensor down with it — the
+1 Hz safety task must keep reading regardless of what the OLED is doing. Each
+bus needs its own pull-ups; most SHT30 and OLED breakout modules already carry
+them, so check before adding more.
 
-## Buzzer Control
+Pin numbers live in `sht30.h` and `oled.h`, not in `config.h`. Change them there
+if the board layout requires it.
 
-The buzzer should be controlled through a GPIO pin, for example:
+## Buzzer
+
+`ENABLE_BUZZER` defaults to `0`. With it off, `HttpClient::initActuators()`
+configures the pin as `INPUT` — high-impedance — so a queued command cannot
+energise a circuit that has not passed hardware verification.
 
 ```text
-BUZZER_PIN -> buzzer signal input
-GND        -> buzzer ground
+BUZZER_PIN (default GPIO 4) -> buzzer signal input
+GND                         -> buzzer ground
 ```
 
-For competition safety and clarity, the buzzer should only support a small set of actions:
+To enable it, verify the module and wiring first, then define `ENABLE_BUZZER 1`
+in `config.h`. Note that `BUZZER_ON_LEVEL` is `LOW`: the firmware assumes an
+active-low module. Check yours before enabling.
 
-| Action | Meaning |
+**Until then, the OLED is the alert output**, and any documentation or
+presentation should say so rather than describing a buzzer that will not sound.
+
+## Command surface
+
+The device accepts only these, and bounds them itself:
+
+| Command | Effect |
 |---|---|
-| off | Stop alert |
-| on | Start alert |
-| slow_beep | Low or medium risk |
-| fast_beep | High risk |
-| continuous | Critical risk |
+| `buzzer_on` | Sound for `duration_ms` (0–30000, defaults to 1000) |
+| `buzzer_off` | Stop |
+| `oled:<text>` | Show a short message |
 
-The exact mode can be mapped from the IoTDA command parameter in firmware.
+No general GPIO control is exposed. OLED text must be ASCII — there is no
+Chinese font on the display, so non-ASCII renders as garbage.
 
-## Local Safety Fallback
+## Configuration
 
-Even when cloud reasoning is unavailable, the firmware may keep a minimal local safety rule:
+Copy the template and fill it in locally:
 
-```text
-temperature >= 45 C -> local buzzer alert
-humidity >= 95 %RH  -> local buzzer alert
+```bash
+cp firmware/combined/src/config.example.h firmware/combined/src/config.h
 ```
 
-This is not the main intelligence of the system. It is only a final safety fallback.
+`config.h` is gitignored and must stay that way. It holds the Wi-Fi password,
+the IoTDA device secret, and the backend URL. Key settings:
 
-## What the Device Must Not Do
+| Macro | Meaning |
+|---|---|
+| `DEVICE_ID` | Must match the backend allowlist (`devices.allowlist`) |
+| `REPORT_INTERVAL_MS` | Reporting cycle, default 10000 (8,640 reports/day) |
+| `SERVER_URL` | Local backend `/api/ingest` endpoint |
+| `ENABLE_BUZZER` | 0 by default, see above |
+| `BUZZER_PIN` | Default GPIO 4 |
 
-- Do not store cloud LLM API keys in firmware.
-- Do not call DeepSeek, Tongyi, Pangu, OpenAI, or other LLM APIs directly from ESP32-S3.
-- Do not run Ollama on ESP32-S3.
-- Do not expose GPIO control through a public network service.
+## What the device must not do
+
+- Do not store LLM API keys in firmware. It never calls a model, so it needs none.
+- Do not call DeepSeek, Tongyi, Pangu, or OpenAI from the device.
+- Do not run Ollama on the ESP32-S3.
+- Do not expose GPIO control to a public network.
 - Do not invent a private IoTDA property report format.
-
-## Firmware Configuration Notes
-
-The local `firmware/src/config.h` file should contain only device-local settings and should not be committed.
-
-Use `firmware/src/config.example.h` as a template. Real values such as Wi-Fi password, IoTDA device secret, and server credentials should stay local.
+- Do not put the decision path behind a network call.

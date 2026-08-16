@@ -49,7 +49,7 @@ ollama:
 # variable, which takes priority over this file. NEVER commit a real key.
 # ------------------------------------------------------------
 deepseek:
-  enabled: true              # Use DeepSeek as the primary inference backend
+  enabled: false             # Primary narration backend when ai.enabled is true
   base_url: "https://api.deepseek.com"
   model: "deepseek-chat"     # or "deepseek-reasoner" for deeper analysis
   api_key: ""                # sk-... (or set DEEPSEEK_API_KEY env var)
@@ -74,7 +74,13 @@ filter:
 # repeat its own input back — and it burns API quota doing it.
 ai:
   max_window_records: 100        # Number of recent records aggregated into the prompt
-  enabled: true                  # Set to false to disable LLM calls entirely (for testing)
+
+  # OFF by default. Detection and alerting happen on the ESP32 (EdgeReasoner +
+  # AdaptiveBaseline) and never involve a model, so nothing here is required for
+  # the system to work — narration only adds a human-readable explanation of a
+  # state change. Turn it on only if you have DeepSeek credentials or a running
+  # Ollama; otherwise every state change logs a failed connection.
+  enabled: false
 
   trigger:
     min_interval_s: 60           # Cooldown per device. Anomalies and first-report bypass it.
@@ -154,13 +160,16 @@ cloud:
   credential: ""             # Device secret (HMAC-SHA256 signing key)
 
 # ------------------------------------------------------------
-# I²C Pin Assignment (informational — used by firmware, not backend)
-# Included here for reference so all hardware config is in one place.
+# Firmware pin assignment — NOT configured here.
+#
+# The backend never touches GPIO, and duplicating pin numbers in this file only
+# creates a second version to get wrong. The authoritative values live in the
+# firmware headers:
+#
+#   SHT30   Wire   SDA 17 / SCL 18, addr 0x44   firmware/combined/src/sht30.h
+#   OLED    Wire1  SDA 38 / SCL 39, addr 0x3C   firmware/combined/src/oled.h
+#   Buzzer  GPIO 4, active-low, disabled by default (ENABLE_BUZZER)
+#
+# The sensor and display are on SEPARATE I2C buses. See docs/hardware.md.
+# Reporting interval is REPORT_INTERVAL_MS in firmware/combined/src/config.h.
 # ------------------------------------------------------------
-# firmware:
-#   i2c_sda_pin: 8
-#   i2c_scl_pin: 9
-#   sensor: "SHT31"          # or "BME280"
-#   oled_address: "0x3C"
-#   sensor_address: "0x44"   # SHT31 default; BME280 is 0x76 or 0x77
-#   sample_interval_ms: 2000  # How often the ESP32 reads and transmits

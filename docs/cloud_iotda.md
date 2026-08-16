@@ -1,8 +1,36 @@
 # Huawei Cloud IoTDA Design
 
-This document records the Huawei Cloud IoTDA side of the project.
+This document records the Huawei Cloud IoTDA side of the project: topics,
+product model, property report, and command downlink.
 
 The key rule is: device-side messages must follow Huawei Cloud IoTDA official MQTT/MQTTS topics and JSON structure. The project may define product model services and properties, but it should not invent a private outer protocol.
+
+## What IoTDA is for here
+
+IoTDA is the **transport and device-access layer**. It carries conclusions the
+ESP32-S3 has already reached; it is not part of the decision path. See
+[edge_reasoning.md](edge_reasoning.md) for where decisions are actually made.
+
+The device publishes two services in one combined message per 10-second cycle:
+
+| `service_id` | Properties |
+|---|---|
+| `Environment` | `temperature`, `humidity` |
+| `EdgeReasoning` | `state`, `severity`, `confidence`, `reason_code` |
+
+`EdgeReasoning` is the device's own verdict. Anything consuming it should
+display or record it — not recompute it.
+
+## Implementation status
+
+| Direction | Status |
+|---|---|
+| Device → IoTDA property report (MQTT/MQTTS) | **Implemented** in `firmware/combined`; needs registered device credentials |
+| IoTDA → device command downlink | Topics and format implemented in firmware |
+| Backend → IoTDA data forwarding / command API | **Not implemented** — `CloudSync` is a skeleton |
+
+The "Data Forwarding" section below therefore describes an integration design,
+not shipped behaviour.
 
 ## Device Property Report
 
@@ -199,14 +227,23 @@ The richer version still follows the official IoTDA command structure because cu
 
 ## Data Forwarding
 
-IoTDA should forward reported device data to the cloud analysis service through a rule or integration path. The cloud service then:
+Not implemented — this is the design for a future `CloudSync` send path.
 
-1. Parses `services`.
-2. Finds `service_id = Environment`.
-3. Reads `temperature` and `humidity`.
-4. Appends the values to the recent trend window.
-5. Runs LLM reasoning and rule fallback.
-6. Calls IoTDA command downlink if alert is needed.
+IoTDA would forward reported device data to a cloud service through a rule or
+integration path. That service would:
+
+1. Parse `services`.
+2. Read `temperature` and `humidity` from `service_id = Environment`.
+3. Read the device's verdict from `service_id = EdgeReasoning`.
+4. Store both, and optionally narrate a state change for a human reader.
+
+It would **not** re-derive the verdict. The device has already decided, using
+sensor history and a learned baseline the cloud does not have, and an
+independent cloud judgement that disagreed would leave the OLED and the
+dashboard contradicting each other.
+
+Any command downlink built on top of this must stay inside the existing
+allowlist (`buzzer_on`, `buzzer_off`, `oled:<text>`, bounded duration).
 
 ## Official References
 
