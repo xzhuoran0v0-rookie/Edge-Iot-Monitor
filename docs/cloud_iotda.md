@@ -25,8 +25,8 @@ display or record it — not recompute it.
 
 | Direction | Status |
 |---|---|
-| Device → IoTDA property report (MQTT/MQTTS) | **Implemented** in `firmware/combined`; needs registered device credentials |
-| IoTDA → device command downlink | Topics and format implemented in firmware |
+| Device → IoTDA property report (MQTT/MQTTS) | **Verified on hardware** — connects over MQTTS and publishes both services every 10 s |
+| IoTDA → device command downlink | Topics and format implemented in firmware. A `BuzzerControl` command is rejected with `local_alarm_active` while a local threshold alarm is sounding. |
 | Backend → IoTDA data forwarding / command API | **Not implemented** — `CloudSync` is a skeleton |
 
 The "Data Forwarding" section below therefore describes an integration design,

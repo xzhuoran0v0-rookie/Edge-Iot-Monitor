@@ -13,6 +13,7 @@ SHT30
   -> applyAdaptiveAssessment()
   -> EdgeAssessment
   -> OLED
+  -> buzzer, if a local threshold is crossed
 ```
 
 Every step runs on the ESP32-S3. There is no network call anywhere in it, so
@@ -44,27 +45,33 @@ decision that was already made.
 
 1. The safety task reads the SHT30 every second and checks physical validity and
    fixed hard limits. A breach is latched immediately.
-2. Every 10 s the main loop takes the latest safety snapshot. If it is older
+2. The same task evaluates the local alarm thresholds. Crossing one sounds the
+   buzzer and puts the reason and the actual numbers on the OLED. This runs in
+   the safety task, not `loop()`, so it does not wait for `setup()` to finish
+   connecting to Wi-Fi, NTP and MQTT — an environment already over threshold at
+   power-on would otherwise wait more than thirty seconds for a beep.
+3. Every 10 s the main loop takes the latest safety snapshot. If it is older
    than 1.5 s, reporting is blocked rather than sending a stale value.
-3. The reading is median-filtered, then observed by `AdaptiveBaseline`.
-4. `EdgeReasoner` adds the sample and assesses its 12-sample window.
-5. `applyAdaptiveAssessment()` overlays the baseline result — `HARD_LIMIT`
+4. The reading is median-filtered, then observed by `AdaptiveBaseline`.
+5. `EdgeReasoner` adds the sample and assesses its 12-sample window.
+6. `applyAdaptiveAssessment()` overlays the baseline result — `HARD_LIMIT`
    overrides everything, `BASELINE_SHIFT` applies only when the fixed layer said
    `NORMAL`.
-6. The OLED is updated. This happens regardless of network state.
-7. If MQTT is connected, one combined message publishes both services to IoTDA.
-8. `HttpClient::postSensorData()` sends readings and the `edge` object to the
+7. The OLED is updated. This happens regardless of network state.
+8. If MQTT is connected, one combined message publishes both services to IoTDA.
+9. `HttpClient::postSensorData()` sends readings and the `edge` object to the
    local backend, with exponential backoff (10 s doubling to 5 min) on failure.
-9. The backend validates, stores, and runs IQR detection as an independent
-   second opinion. It does not alter the device's verdict.
-10. `edge_assessments` records only state *transitions*, so each row's timestamp
+10. The backend validates, stores, and runs IQR detection as an independent
+    second opinion. It does not alter the device's verdict.
+11. `edge_assessments` records only state *transitions*, so each row's timestamp
     is when that state began.
-11. If narration is enabled, a state change may trigger one LLM call to produce
+12. If narration is enabled, a state change may trigger one LLM call to produce
     a human-readable explanation. Steady state produces no call.
-12. The dashboard polls `GET /api/readings` every 5 s and renders the device's
+13. The dashboard polls `GET /api/readings` every 5 s and renders the device's
     verdict unchanged.
-13. The device polls `GET /api/commands/next` for queued OLED or buzzer commands
-    and acknowledges them.
+14. The device polls `GET /api/commands/next` for queued OLED or buzzer commands
+    and acknowledges them. While a local alarm is active, buzzer commands are
+    refused — a real alarm is not something a network message gets to switch off.
 
 ## Sequence
 
@@ -110,8 +117,9 @@ sequenceDiagram
 2. Breathe on the sensor or warm it. The slope crosses 1.2 °C/min.
 3. The OLED switches to `TEMP RISING` within one 10-second cycle.
 4. The dashboard shows the same state, with confidence and the time it began.
-5. **Pull the Wi-Fi.** The OLED keeps updating and keeps assessing correctly —
-   this is the point of the architecture, and it demonstrates in five seconds.
+5. **Pull the Wi-Fi, then warm the sensor past 30 °C.** The buzzer still sounds
+   and the OLED still names the reason with real numbers. This is the point of
+   the architecture, and it demonstrates in ten seconds.
 6. Reconnect. Backoff recovers, and the backlog resumes reporting.
 
 With no hardware available, `python3 scripts/simulate_sensor.py --interval 2`
@@ -128,5 +136,6 @@ drives the same path from a laptop.
 | Stale safety sample (>1.5 s) | Reporting blocked for that cycle. |
 | Readings erratic | `UNSTABLE` / `ERRATIC_SIGNAL` — the device says the signal cannot be trusted instead of drawing a conclusion from it. |
 | LLM API fails | Falls back to local Ollama; if that fails too, no narration. No alert is affected — narration is not in the decision path. |
+| Everything network-side down at once | The local threshold alarm still sounds within a second, with its reason on the OLED. Nothing in that path leaves the chip. |
 | Device stops reporting | Dashboard marks it offline after 30 s (three missed reports); the backend pill stays green, so the two are distinguishable. |
 | NVS unavailable | Baseline learning continues in RAM, and says so on the serial log. |

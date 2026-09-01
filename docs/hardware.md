@@ -12,7 +12,7 @@ It runs no language model, and holds no API key, because it never calls one.
 | ESP32-S3 | Controller: sampling, reasoning, OLED, Wi-Fi, MQTT/MQTTS, GPIO | — |
 | SHT30 | Temperature and humidity sensing | `Wire`, SDA 17 / SCL 18, addr `0x44` |
 | OLED | Readings, device verdict, link status | `Wire1`, SDA 38 / SCL 39, addr `0x3C` |
-| Buzzer | Audible alert (**disabled by default**, see below) | GPIO 4, active-low |
+| Buzzer | Local threshold alarm, verified working | GPIO 4, active-low, `ENABLE_BUZZER 1` |
 
 ## Device responsibilities
 
@@ -20,6 +20,8 @@ Implemented in `firmware/combined`:
 
 - Sample the SHT30 over I²C on a dedicated 1 Hz FreeRTOS task.
 - Check fixed hard limits on every sample, independent of network state.
+- Sound the buzzer and show the reason on the OLED when a local threshold is
+  crossed — no network anywhere in that path.
 - Median-filter readings before they reach the reasoning layers.
 - Learn and persist an adaptive baseline (NVS namespace `envbaseline`).
 - Assess a 12-sample window and produce an `EdgeAssessment`.
@@ -69,21 +71,78 @@ if the board layout requires it.
 
 ## Buzzer
 
-`ENABLE_BUZZER` defaults to `0`. With it off, `HttpClient::initActuators()`
-configures the pin as `INPUT` — high-impedance — so a queued command cannot
-energise a circuit that has not passed hardware verification.
-
 ```text
-BUZZER_PIN (default GPIO 4) -> buzzer signal input
-GND                         -> buzzer ground
+BUZZER_PIN (GPIO 4) -> buzzer signal input
+GND                 -> buzzer ground
 ```
 
-To enable it, verify the module and wiring first, then define `ENABLE_BUZZER 1`
-in `config.h`. Note that `BUZZER_ON_LEVEL` is `LOW`: the firmware assumes an
-active-low module. Check yours before enabling.
+Hardware-verified on an active-low module: `BUZZER_ACTIVE_LEVEL LOW`,
+`ENABLE_BUZZER 1`. `config.example.h` still ships with `ENABLE_BUZZER 0`,
+because nobody else's module and wiring have been checked, and with it off
+`HttpClient::initActuators()` holds the pin at `INPUT` — high-impedance — so no
+queued command can energise an unverified circuit.
 
-**Until then, the OLED is the alert output**, and any documentation or
-presentation should say so rather than describing a buzzer that will not sound.
+**Determine the active level before enabling.** Guessing wrong means the buzzer
+sounds continuously from power-on and cannot be silenced. With VCC and GND
+connected, touch the module's I/O pin to GND — if it sounds, it is `LOW`; if it
+only sounds against 3V3, set `BUZZER_ACTIVE_LEVEL HIGH`.
+
+On boot the firmware emits a short self-test beep, which confirms wiring and
+active level in one second without needing the network, a threshold, or a
+command:
+
+```text
+[BUZZER] Self-test beep
+```
+
+## Local threshold alarm
+
+The one alarm path that no network failure can break. Crossing either threshold
+sounds the buzzer and puts the reason on the OLED, on the device, with nothing
+in between.
+
+```c
+#define ALARM_TEMP_C 30.0f
+#define ALARM_HUMIDITY_PCT 80.0f
+```
+
+These sit deliberately below the `AdaptiveBaseline` hard limits (45 °C / 95 %RH):
+the hard limits are a safety boundary, while these are the everyday alarm point,
+and 30 °C is about what cupping the sensor in your hand produces — so the alarm
+is demonstrable without heating anything.
+
+Evaluation runs inside the **1 Hz safety task**, not the main loop. That
+distinction matters: `loop()` does not run until `setup()` finishes, and setup
+blocks on Wi-Fi (20 s timeout), NTP, and MQTT. An environment already over
+threshold at power-on would otherwise wait more than thirty seconds for a beep.
+The safety task starts before Wi-Fi, so the alarm is genuinely independent of
+the network.
+
+Clearing requires 3 consecutive safe samples, so a value resting on the
+threshold does not chatter.
+
+While the local alarm is active, remote `buzzer_on` / `buzzer_off` commands —
+from the backend queue or from IoTDA — are refused and logged. A real alarm is
+not something a network message gets to switch off.
+
+## Alert display
+
+`OLED::showAlert()` renders under a `! DEVICE ALERT !` header with room for
+5 lines of 21 characters, so alerts carry their reason and the actual numbers
+rather than a bare label:
+
+| Condition | On screen |
+|---|---|
+| Temperature alarm | `ALARM  TEMP 31.2°C LIMIT 30.0°C` |
+| Humidity alarm | `ALARM  HUMIDITY 82.5% LIMIT 80.0%` |
+| Hard limit, upper | `HARD LIMIT  TEMP 46.1°C MAX 45.0°C` |
+| Hard limit, lower | `HARD LIMIT  TEMP -12.0°C MIN -10.0°C` |
+| Sensor faults | `SHT30 OFFLINE`, `SHT30 INVALID DATA`, `SENSOR DRIFT` |
+
+The font covers `0x20`–`0x5B`, with `[` remapped to the degree glyph (see the
+tail of `font5x7` in `oled.cpp`), so digits, `%`, `.` and `°` all render. The
+serial log prints the same string that goes to the screen, so alerts can be
+diagnosed without standing in front of the device.
 
 ## Command surface
 
@@ -113,9 +172,11 @@ the IoTDA device secret, and the backend URL. Key settings:
 |---|---|
 | `DEVICE_ID` | Must match the backend allowlist (`devices.allowlist`) |
 | `REPORT_INTERVAL_MS` | Reporting cycle, default 10000 (8,640 reports/day) |
-| `SERVER_URL` | Local backend `/api/ingest` endpoint |
-| `ENABLE_BUZZER` | 0 by default, see above |
-| `BUZZER_PIN` | Default GPIO 4 |
+| `SERVER_URL` | Local backend `/api/ingest` endpoint. Must be reachable from the **device's** subnet — a laptop on a different network is the usual cause of `[HTTP] POST failed code=-1` |
+| `ENABLE_BUZZER` | 0 in the example; 1 once the module is verified |
+| `BUZZER_ACTIVE_LEVEL` | `LOW` or `HIGH` — the level that makes your module sound |
+| `BUZZER_PIN` | GPIO 4 |
+| `ALARM_TEMP_C` / `ALARM_HUMIDITY_PCT` | Local alarm thresholds |
 
 ## What the device must not do
 

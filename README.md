@@ -18,6 +18,7 @@ SHT30
   -> EdgeAssessment              {state, severity, confidence, reason}
        |
        +-> OLED                  immediate, works with no network
+       +-> buzzer                local threshold alarm, ~1 s, no network
        +-> Huawei Cloud IoTDA    MQTT property report
        +-> local backend         SQLite, IQR, web dashboard
              +-> LLM narration   explains a state change; decides nothing
@@ -51,7 +52,7 @@ Deciding on the chip costs one ring buffer and a handful of comparisons every
 | ESP32-S3 | Sampling, reasoning, OLED, Wi-Fi/MQTT, GPIO | — |
 | SHT30 | Temperature and humidity | `Wire`, SDA 17 / SCL 18, addr `0x44` |
 | OLED | Readings, verdict, link status | `Wire1`, SDA 38 / SCL 39, addr `0x3C` |
-| Buzzer | Audible alert — **disabled by default** | GPIO 4, active-low |
+| Buzzer | Local threshold alarm | GPIO 4, active-low, verified |
 
 The sensor and display sit on **separate I²C buses**, so a hung display cannot
 stall the 1 Hz safety task. See [hardware.md](docs/hardware.md) before wiring.
@@ -143,12 +144,13 @@ URL. It is gitignored and must stay that way.
 |---|---|
 | On-device reasoning, baseline learning, safety task | Implemented, host-tested |
 | OLED display | Implemented |
-| IoTDA MQTT property report | Implemented; needs registered device credentials |
+| IoTDA MQTT property report | **Verified on hardware** — connects and publishes `Environment` + `EdgeReasoning` |
 | Backend ingest, storage, IQR, command queue, dashboard API | Implemented |
 | Web dashboard | Implemented |
 | LLM narration | Implemented, disabled by default |
 | Backend → IoTDA command downlink (`CloudSync`) | **Not implemented** — skeleton only |
-| Buzzer output | **Disabled by default** — pending hardware verification |
+| Local threshold alarm (buzzer + OLED reason) | **Verified on hardware** — fires from the 1 Hz safety task, before the network is up |
+| Buzzer output | Verified active-low; `ENABLE_BUZZER 1` locally, `0` in the example config |
 
 ## Security boundaries
 

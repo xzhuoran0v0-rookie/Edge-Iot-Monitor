@@ -56,10 +56,11 @@ a web dashboard.
 
 ```text
 SHT30
-  -> 1 Hz safety task (hard limits)
+  -> 1 Hz safety task (hard limits + local alarm thresholds)
+  -> buzzer + OLED reason           (immediate, no network, ~1 s)
   -> median filter -> AdaptiveBaseline -> EdgeReasoner
   -> EdgeAssessment {state, severity, confidence, reason}
-  -> OLED                          (immediate, no network)
+  -> OLED                           (immediate, no network)
   -> IoTDA property report          (Environment + EdgeReasoning services)
   -> local backend                  (SQLite, IQR, dashboard)
   -> optional LLM narration         (explains; decides nothing)
@@ -102,10 +103,20 @@ SHT30
 8. **Zero marginal cost per decision.** 8,640 assessments per device per day,
    none billable.
 
-9. **Degradation is designed, not incidental.** Exponential backoff on the
-   backend, independent MQTT retry, stale-sample guards that block reporting
-   rather than sending a bad value, and a dashboard that distinguishes "backend
-   down" from "device silent".
+9. **The alarm fires before the network exists.** Threshold evaluation lives in
+   the 1 Hz safety task, not the main loop, so a device powered on into an
+   already-unsafe room sounds within a second instead of waiting out Wi-Fi, NTP
+   and MQTT connection. While it is sounding, no remote command can switch it
+   off. Both properties were verified on hardware.
+
+10. **The alert names its cause.** The OLED shows which quantity, its value, and
+    the limit it crossed — `ALARM  TEMP 31.2C LIMIT 30.0C` — rather than a bare
+    label a person still has to interpret.
+
+11. **Degradation is designed, not incidental.** Exponential backoff on the
+    backend, independent MQTT retry, stale-sample guards that block reporting
+    rather than sending a bad value, and a dashboard that distinguishes "backend
+    down" from "device silent".
 
 ## Safety and Security
 
@@ -118,8 +129,11 @@ SHT30
   with a bounded duration, so no arbitrary GPIO control is exposed.
 - Ingest enforces a device allowlist; the command API can require a key.
 - IoTDA property reports use the official topic and JSON structure.
-- The buzzer GPIO is held high-impedance by default, so a command cannot
-  energise a circuit that has not passed hardware verification.
+- The buzzer GPIO is held high-impedance whenever `ENABLE_BUZZER` is 0, so a
+  command cannot energise a circuit that has not passed hardware verification.
+  The shipped example config keeps it that way; this build enables it only
+  because the module and its active level were tested.
+- A local alarm cannot be silenced by a remote command.
 
 ## Presentation Wording
 
@@ -151,23 +165,25 @@ move.
 Worth stating before a judge finds them:
 
 - The backend → IoTDA command downlink (`CloudSync`) is a skeleton. The device's
-  own MQTT publish to IoTDA works; the server-side forwarding direction is not
-  implemented.
-- The buzzer is disabled by default pending hardware verification. The OLED is
-  the working alert output.
+  own MQTT publish to IoTDA works and is verified; the server-side forwarding
+  direction is not implemented.
 - Wi-Fi, MQTT, and NTP status are shown on the OLED but are not part of the
   ingest payload, so the web dashboard does not display them.
-- IoTDA MQTT requires registered device credentials to demonstrate.
+- `config.example.h` ships with the buzzer disabled, so anyone reproducing the
+  build must verify their module's active level before enabling it.
 
 ## Demo Script
 
 1. Show live readings and the device verdict on the dashboard.
 2. Warm the sensor. Within one cycle the OLED and the dashboard both show
    `TEMP RISING`, with a confidence and the time the state began.
-3. **Pull the Wi-Fi.** The OLED keeps assessing correctly. This is the argument
-   for the whole architecture, and it takes five seconds to make.
-4. Reconnect; backoff recovers and reporting resumes.
-5. Show `edge_assessments` in SQLite: a state transition timeline, not a wall of
+3. Keep warming past 30 °C. The buzzer sounds and the OLED names the cause with
+   real numbers.
+4. **Pull the Wi-Fi and do it again.** The buzzer still sounds, at the same
+   speed, with the same reason on screen. This is the argument for the whole
+   architecture, and it takes ten seconds to make.
+5. Reconnect; backoff recovers and reporting resumes.
+6. Show `edge_assessments` in SQLite: a state transition timeline, not a wall of
    duplicates.
 
 Without hardware: `python3 scripts/simulate_sensor.py --interval 2` drives the

@@ -114,6 +114,50 @@ separate from the 10-second reasoning and reporting cycle.
 - **Clearing requires 3 consecutive safe samples** (`HARD_LIMIT_CLEAR_SAFE_SAMPLES`),
   which stops a value sitting on the boundary from oscillating.
 
+## The local alarm
+
+The assessment above explains; the alarm *acts*. Crossing either threshold
+sounds the buzzer and writes the reason to the OLED:
+
+```c
+#define ALARM_TEMP_C 30.0f
+#define ALARM_HUMIDITY_PCT 80.0f
+```
+
+These sit below the hard limits (45 °C / 95 %RH) on purpose. Hard limits are a
+safety boundary that learning may never widen; these are the everyday alarm
+point, low enough that cupping the sensor in your hand demonstrates it.
+
+Three properties make this the part of the system that cannot be broken from
+outside:
+
+**It runs in the 1 Hz safety task, not `loop()`.** `loop()` does not begin until
+`setup()` finishes, and setup blocks on Wi-Fi (20 s timeout), NTP, and MQTT. An
+environment already over threshold at power-on would wait more than thirty
+seconds for a beep. The safety task starts before Wi-Fi, so the alarm is
+genuinely independent of the network — verified on hardware, where `[ALARM]`
+appears in the log while Wi-Fi is still connecting.
+
+**A network command cannot silence it.** While the alarm is active, remote
+`buzzer_on` / `buzzer_off` — from the backend queue or from IoTDA — are refused
+and logged.
+
+**Clearing needs 3 consecutive safe samples**, so a value resting on the
+threshold does not chatter on and off.
+
+The OLED carries the reason rather than a bare label, because someone standing
+in front of the device needs to know which quantity, how far, and past what:
+
+```text
+! DEVICE ALERT !
+
+ALARM  TEMP 31.2°C
+LIMIT 30.0°C
+```
+
+The same string is printed to the serial log, so an alert can be diagnosed
+without looking at the screen.
+
 ## What the device sends
 
 Every 10 seconds (`REPORT_INTERVAL_MS`), one assessment goes out over two
@@ -167,6 +211,11 @@ of genuine ambient data. Force them directly instead:
 ```bash
 python3 scripts/simulate_sensor.py --force-edge-state HARD_LIMIT
 ```
+
+The alarm itself is device-side and needs the board. The quickest check without
+heating anything is to set `ALARM_TEMP_C` temporarily below the current room
+temperature, flash, confirm the buzzer and the `[ALARM]` log line, then restore
+it.
 
 If the constants in `edge_reasoner.cpp` change, update the Python mirror in the
 same commit. A silently diverged simulator tests nothing.

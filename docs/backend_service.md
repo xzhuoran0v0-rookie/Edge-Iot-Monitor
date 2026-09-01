@@ -136,11 +136,27 @@ that key is configured.
 {"device_id": "esp32s3-001", "command": "buzzer_on", "duration_ms": 1000}
 ```
 
-Allowlisted commands: `buzzer_on`, `buzzer_off`, and `oled:<text>`.
-`duration_ms` must be 0–30000. Anything else returns 400 — the device never
-receives an arbitrary instruction.
+Allowlisted commands: `buzzer_on`, `buzzer_off`, and `oled:<text>`. Anything
+else returns 400 — the device never receives an arbitrary instruction.
 
-Returns 202 with a `command_id`.
+`duration_ms` ranges mirror the firmware, because a command the device will
+reject must not be queued as if it were accepted:
+
+| Command | Accepted `duration_ms` | Notes |
+|---|---|---|
+| `buzzer_on` | 0–30000 | 0 becomes 1000 |
+| `buzzer_off` | 0 | Forced to 0 |
+| `oled:<text>` | 0, or 5000–120000 | 0 is normalised to the device default, 30000 |
+
+`oled:` text must be printable ASCII, at most 240 bytes, with at least one
+visible character — the display has no font for anything else and the firmware
+rejects it byte by byte.
+
+A queued buzzer command is refused by the device while a local threshold alarm
+is active, and acknowledged as `failed`. That is deliberate: the alarm is
+decided on the chip, and a network message does not get to switch it off.
+
+Returns 202 with a `command_id` and the normalised `duration_ms`.
 
 ### `GET /api/commands/next?device_id=...`
 

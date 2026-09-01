@@ -21,6 +21,7 @@ The cloud and the LLM explain and display it. Neither decides anything.
 |   EdgeReasoner (12-sample window, fixed thresholds + trend)   |
 |   -> EdgeAssessment {state, severity, confidence, reason}     |
 |   OLED shows it immediately, network or not                   |
+|   Buzzer sounds on a local threshold, ~1 s, no network        |
 +---------------------------+----------------------------------+
                             |
         +-------------------+-------------------+
@@ -54,7 +55,7 @@ The cloud and the LLM explain and display it. Neither decides anything.
 
 | Layer | Responsibility | Can it decide? |
 |---|---|---|
-| ESP32-S3 | Sense, filter, learn baseline, assess, display, alert | **Yes — the only layer that does** |
+| ESP32-S3 | Sense, filter, learn baseline, assess, display, sound the alarm | **Yes — the only layer that does** |
 | Huawei Cloud IoTDA | Device access, MQTT transport, property storage, command channel | No |
 | Local backend | Persist readings and verdicts, IQR outlier detection, serve the dashboard, queue commands | No |
 | Web dashboard | Show live data and the device's verdict unchanged | No |
@@ -76,7 +77,10 @@ for the room it is installed in, but its bands are clamped inside immutable hard
 limits. Learning can narrow attention, never widen the safety boundary.
 
 **Latency is bounded by hardware, not by an API.** Hard-limit detection is one
-sample away — 1 second — not one round trip and one model response away.
+sample away — 1 second — not one round trip and one model response away. The
+alarm is evaluated inside the 1 Hz safety task rather than the main loop, so it
+fires before Wi-Fi, NTP and MQTT have even finished connecting, and a network
+command cannot switch it off while it is active.
 
 **No key ever reaches the device.** The ESP32-S3 holds no LLM credential
 because it never calls a model. This is a consequence of the architecture, not
@@ -92,16 +96,19 @@ them billable.
 | On-device reasoning (EdgeReasoner + AdaptiveBaseline) | Implemented, host-tested |
 | 1 Hz safety task with hard limits | Implemented |
 | OLED display and status pages | Implemented |
-| IoTDA MQTT property report (`Environment` + `EdgeReasoning`) | Implemented in firmware; needs registered device credentials |
+| IoTDA MQTT property report (`Environment` + `EdgeReasoning`) | **Verified on hardware** — connects over MQTTS and publishes both services |
 | Local backend ingest, storage, IQR, command queue | Implemented |
 | `GET /api/readings` and web dashboard | Implemented |
 | LLM narration (DeepSeek primary, Ollama fallback) | Implemented, disabled by default |
 | Backend → IoTDA command downlink (`CloudSync`) | **Not implemented** — skeleton only |
-| Buzzer output | **Disabled by default** — GPIO held high-impedance pending hardware verification |
+| Local threshold alarm (buzzer + OLED reason) | **Verified on hardware** — evaluated in the 1 Hz safety task |
+| Buzzer output | Verified active-low; `ENABLE_BUZZER 1` locally, `0` in the example config |
 
-The last two rows are deliberate. `CloudSync` has no send path, and
-`ENABLE_BUZZER` defaults to 0 so a remote command cannot energise an unverified
-circuit. Both are stated here rather than implied to work.
+`CloudSync` is the one row that does not work: it has no send path. It is stated
+here rather than implied to work. The buzzer ships disabled in the example
+config for the same reason it was disabled here until it was tested — nobody
+else's module and wiring have been checked, and guessing the active level wrong
+makes it sound continuously from power-on.
 
 ## Related documents
 
