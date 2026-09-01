@@ -91,3 +91,4 @@ desktop.ini
 # --- Local project TODOs ---
 /TODO.md
 firmware/combined/src/config.h
+package-lock.json
