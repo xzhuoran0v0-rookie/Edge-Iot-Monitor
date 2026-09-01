@@ -17,6 +17,18 @@ class HttpClient
 public:
     static void initActuators();
 
+    /// 开机自检：短鸣一声。接线和触发电平不对，这里立刻听得出来。
+    static void selfTestBuzzer();
+
+    /// 蜂鸣器统一出口。电平由 config.h 的 BUZZER_ACTIVE_LEVEL 决定，
+    /// ENABLE_BUZZER 为 0 时是空操作。
+    static void setBuzzer(bool on);
+
+    /// 本地阈值告警占用蜂鸣器期间，远程 buzzer 命令一律拒绝 ——
+    /// 真实告警不该被一条网络命令按掉。
+    static void setLocalAlarm(bool active);
+    static bool localAlarm();
+
     static bool postSensorData(float temp, float humi,
                                const EdgeAssessment &assessment);
 
@@ -32,6 +44,7 @@ private:
     static void ackCommand(int commandId, const String &result);
     static bool applyCommand(const String &command, int durationMs);
 
+    static bool localAlarmActive_;
     static uint8_t consecutiveFailures_;
     static unsigned long backoffUntilMs_;
 };

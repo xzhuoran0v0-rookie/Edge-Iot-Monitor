@@ -24,6 +24,16 @@
 #define ENABLE_BUZZER 0
 #endif
 
+// 本地阈值告警。刻意低于 AdaptiveBaseline 的硬限（45C / 95%RH），
+// 硬限是安全边界，这个是演示和日常可达的告警点。
+#ifndef ALARM_TEMP_C
+#define ALARM_TEMP_C 30.0f
+#endif
+
+#ifndef ALARM_HUMIDITY_PCT
+#define ALARM_HUMIDITY_PCT 80.0f
+#endif
+
 #ifndef IOTDA_EDGE_SERVICE_ID
 #define IOTDA_EDGE_SERVICE_ID "EdgeReasoning"
 #endif
@@ -38,8 +48,7 @@
 
 namespace
 {
-constexpr uint8_t BUZZER_ON_LEVEL = LOW;
-constexpr uint8_t BUZZER_OFF_LEVEL = HIGH;
+constexpr uint8_t ALARM_CLEAR_SAFE_SAMPLES = 3;
 constexpr unsigned long SENSOR_RETRY_INTERVAL_MS = 2000;
 constexpr unsigned long MQTT_RETRY_INTERVAL_MS = 5000;
 constexpr unsigned long SAFETY_SAMPLE_INTERVAL_MS = 1000;
@@ -76,6 +85,8 @@ bool baselinePreferencesReady = false;
 bool baselinePersistAttempted = false;
 unsigned long lastBaselinePersistAttemptMs = 0;
 bool invalidSampleAlert = false;
+bool thresholdAlarmActive = false;
+uint8_t alarmSafeSamples = 0;
 bool hardLimitAlert = false;
 uint8_t hardLimitSafeSamples = 0;
 bool ntpSynced = false;
@@ -461,6 +472,90 @@ static void markSensorOffline()
     OLED::showAlert("SHT30 OFFLINE");
 }
 
+// OLED 字库把 '[' 复用成度数符号（见 oled.cpp 的 font5x7 表尾），
+// 字库范围是 0x20..0x5B，所以下面用到的 % . 数字 大写字母都有字模。
+constexpr char OLED_DEGREE = '[';
+
+static void appendTemp(String &out, float value)
+{
+    out += String(value, 1);
+    out += OLED_DEGREE;
+    out += 'C';
+}
+
+/**
+ * 告警原因文本。
+ *
+ * 只写"ENV ALARM"等于没说 —— 站在屏幕前的人需要知道是温度还是湿度、
+ * 现在多少、门限多少，才能判断要不要处理。告警页有 5 行 × 21 字符
+ * （drawWrapped，128/6），装得下实际数值。
+ */
+static String formatThresholdReason(float temperature, float humidity)
+{
+    String reason = "ALARM  ";
+    bool first = true;
+
+    if (temperature >= ALARM_TEMP_C)
+    {
+        reason += "TEMP ";
+        appendTemp(reason, temperature);
+        reason += " LIMIT ";
+        appendTemp(reason, ALARM_TEMP_C);
+        first = false;
+    }
+    if (humidity >= ALARM_HUMIDITY_PCT)
+    {
+        if (!first)
+            reason += "  ";
+        reason += "HUMIDITY ";
+        reason += String(humidity, 1);
+        reason += "% LIMIT ";
+        reason += String(ALARM_HUMIDITY_PCT, 1);
+        reason += '%';
+    }
+    return reason;
+}
+
+/// 硬限用不同的首词，免得和阈值告警在屏幕上分不清。
+static String formatHardLimitReason(float temperature, float humidity)
+{
+    const AdaptiveBaselineConfig &config = adaptiveBaseline.config();
+    String reason = "HARD LIMIT  ";
+
+    if (temperature <= config.hardTempLowerC)
+    {
+        reason += "TEMP ";
+        appendTemp(reason, temperature);
+        reason += " MIN ";
+        appendTemp(reason, config.hardTempLowerC);
+    }
+    else if (temperature >= config.hardTempUpperC)
+    {
+        reason += "TEMP ";
+        appendTemp(reason, temperature);
+        reason += " MAX ";
+        appendTemp(reason, config.hardTempUpperC);
+    }
+
+    if (humidity <= config.hardHumidityLowerPct)
+    {
+        reason += "  HUMIDITY ";
+        reason += String(humidity, 1);
+        reason += "% MIN ";
+        reason += String(config.hardHumidityLowerPct, 1);
+        reason += '%';
+    }
+    else if (humidity >= config.hardHumidityUpperPct)
+    {
+        reason += "  HUMIDITY ";
+        reason += String(humidity, 1);
+        reason += "% MAX ";
+        reason += String(config.hardHumidityUpperPct, 1);
+        reason += '%';
+    }
+    return reason;
+}
+
 static void sampleSafetySensor()
 {
     if (!ensureSensorReady())
@@ -531,7 +626,8 @@ static void sampleSafetySensor()
         {
             hardLimitAlert = true;
             queueHardLimitEvent(temperature, humidity);
-            OLED::showAlert("ENV HARD LIMIT");
+            OLED::showAlert(
+                formatHardLimitReason(temperature, humidity));
             Serial.println(
                 "[SAFETY] Hard limit latched for next cloud slot");
         }
@@ -555,6 +651,65 @@ static void sampleSafetySensor()
     }
 }
 
+/**
+ * 本地阈值告警 —— 整条路径没有一次网络调用。
+ *
+ * 判定用的是安全任务 1 Hz 刷新的快照，所以检测周期是 1 秒，
+ * 而不是 10 秒的上报周期：告警不该等一个上报窗口。
+ *
+ * 迟滞和硬限那套一致：越过立即响，要连续 ALARM_CLEAR_SAFE_SAMPLES 个
+ * 安全样本才解除，避免值贴着阈值时来回叫。
+ *
+ * 样本无效（传感器掉线/读数不合法）时保持当前状态不变 —— 一次读失败
+ * 不足以断定环境已经安全，静音一个可能真实的告警比误报更危险。
+ */
+static void applyThresholdAlarm()
+{
+    const SafetySnapshot snapshot = loadSafetySnapshot();
+    if (!snapshot.valid)
+        return;
+
+    const bool breached =
+        snapshot.temperature >= ALARM_TEMP_C ||
+        snapshot.humidity >= ALARM_HUMIDITY_PCT;
+
+    if (breached)
+    {
+        alarmSafeSamples = 0;
+        if (!thresholdAlarmActive)
+        {
+            thresholdAlarmActive = true;
+            HttpClient::setLocalAlarm(true);
+            HttpClient::setBuzzer(true);
+            // 打印屏幕上的原话，排查时不用凑到 OLED 前面看。
+            // 串口里 '[' 就是屏幕上的度数符号。
+            const String reason =
+                formatThresholdReason(snapshot.temperature,
+                                      snapshot.humidity);
+            Serial.print("[ALARM] buzzer on, OLED: ");
+            Serial.println(reason);
+            OLED::showAlert(reason);
+        }
+        return;
+    }
+
+    if (!thresholdAlarmActive)
+        return;
+
+    if (alarmSafeSamples < ALARM_CLEAR_SAFE_SAMPLES)
+    {
+        ++alarmSafeSamples;
+        return;
+    }
+
+    thresholdAlarmActive = false;
+    alarmSafeSamples = 0;
+    HttpClient::setBuzzer(false);
+    HttpClient::setLocalAlarm(false);
+    OLED::clearAlert();
+    Serial.println("[ALARM] Cleared after stable safe samples");
+}
+
 static void safetyTask(void *)
 {
     TickType_t nextWake = xTaskGetTickCount();
@@ -564,6 +719,10 @@ static void safetyTask(void *)
             &nextWake,
             pdMS_TO_TICKS(SAFETY_SAMPLE_INTERVAL_MS));
         sampleSafetySensor();
+        // 告警必须跟着采样跑，不能跟着 loop() 跑：loop() 要等 setup() 里的
+        // WiFi/NTP/MQTT 全部结束，开机即超标的情况会被压后三十多秒才响。
+        // 这个任务在联网之前就已启动，所以放这里才真正与网络无关。
+        applyThresholdAlarm();
     }
 }
 
@@ -708,13 +867,21 @@ static void onMqttMessage(char *topicChars, byte *payload, unsigned int length)
         return;
     }
 
+    // 本地告警期间云端命令同样不能按掉蜂鸣器，理由和本地命令一致。
+    if (HttpClient::localAlarm())
+    {
+        Serial.println("[BUZZER] Cloud command ignored: local alarm active");
+        publishCommandResponse(requestId, 1, "local_alarm_active");
+        return;
+    }
+
 #if !ENABLE_BUZZER
     (void)enabled;
     Serial.println("[BUZZER] Cloud command rejected: hardware disabled");
     publishCommandResponse(requestId, 1, "hardware_disabled");
     return;
 #else
-    digitalWrite(BUZZER_PIN, enabled ? BUZZER_ON_LEVEL : BUZZER_OFF_LEVEL);
+    HttpClient::setBuzzer(enabled);
     Serial.print("[BUZZER] ");
     Serial.println(enabled ? "ON" : "OFF");
 
@@ -722,7 +889,7 @@ static void onMqttMessage(char *topicChars, byte *payload, unsigned int length)
     if (enabled && durationMs > 0 && durationMs <= 30000)
     {
         delay(durationMs);
-        digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
+        HttpClient::setBuzzer(false);
     }
 #endif
 
@@ -836,6 +1003,7 @@ void setup()
 
     initAdaptiveBaseline();
     HttpClient::initActuators();
+    HttpClient::selfTestBuzzer();
 
     OLED::init();
     OLED::showStatus("STARTING");
@@ -907,6 +1075,7 @@ void loop()
     {
         lastSafetySampleMs = safetyNow;
         sampleSafetySensor();
+        applyThresholdAlarm();
     }
 
     WiFiManager::reconnectIfNeeded();

@@ -28,9 +28,31 @@
 #define IOTDA_SERVICE_ID "Environment"
 #define IOTDA_EDGE_SERVICE_ID "EdgeReasoning"
 
-// The current buzzer module is intentionally disabled until its wiring and
-// active level pass a hardware test.
+// ---------------- Buzzer ----------------
+// Set to 1 only after the module and its wiring pass a hardware test. While 0
+// the GPIO is held high-impedance so no command can energise an unverified
+// circuit. On boot the firmware emits a short self-test beep, which is the
+// fastest way to confirm both the wiring and the active level below.
 #define ENABLE_BUZZER 0
+
+// Which logic level makes YOUR module sound. Most active-buzzer breakouts are
+// active-low, but plenty are active-high, and guessing wrong means the buzzer
+// screams continuously from power-on and cannot be silenced.
+//
+// To find out in 30 seconds, with VCC and GND connected: touch the module's
+// I/O pin to GND — if it sounds, it is LOW. Touch it to 3V3 — if it sounds
+// there instead, change this to HIGH.
+#define BUZZER_ACTIVE_LEVEL LOW
+
+// Local alarm thresholds. Crossing either sounds the buzzer immediately, on
+// the device, with no network involved — this is the one alarm path that
+// cannot be broken by Wi-Fi, the cloud, or an API quota.
+//
+// These are deliberately lower than the AdaptiveBaseline hard limits (45 C /
+// 95 %RH) so the alarm is reachable in a demo: 30 C is about what breathing on
+// the sensor or cupping it in your hand produces.
+#define ALARM_TEMP_C 30.0f
+#define ALARM_HUMIDITY_PCT 80.0f
 #define IOTDA_ALARM_SERVICE_ID "Alarm"
 #define IOTDA_BUZZER_COMMAND_NAME "BuzzerControl"
 

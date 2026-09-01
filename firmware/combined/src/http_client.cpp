@@ -15,15 +15,24 @@
 #define ENABLE_BUZZER 0
 #endif
 
+// 触发电平只在 config.h 里定义一次。之前 ON/OFF 两个常量在 main.cpp 和这里
+// 各写了一份，改一处漏一处就会出现"命令能响、告警不响"这种难查的问题。
+#ifndef BUZZER_ACTIVE_LEVEL
+#define BUZZER_ACTIVE_LEVEL LOW
+#endif
+
 namespace
 {
-constexpr uint8_t BUZZER_ON_LEVEL = LOW;
-constexpr uint8_t BUZZER_OFF_LEVEL = HIGH;
+constexpr uint8_t BUZZER_ON_LEVEL = BUZZER_ACTIVE_LEVEL;
+constexpr uint8_t BUZZER_OFF_LEVEL =
+    BUZZER_ACTIVE_LEVEL == LOW ? HIGH : LOW;
+constexpr unsigned long BUZZER_SELFTEST_MS = 150;
 constexpr uint8_t MAX_BACKOFF_FAILURES = 6;
 constexpr unsigned long BASE_BACKOFF_MS = 10000;
 constexpr unsigned long MAX_BACKOFF_MS = 5UL * 60UL * 1000UL;
 }
 
+bool HttpClient::localAlarmActive_ = false;
 uint8_t HttpClient::consecutiveFailures_ = 0;
 unsigned long HttpClient::backoffUntilMs_ = 0;
 
@@ -38,6 +47,35 @@ void HttpClient::initActuators()
     pinMode(BUZZER_PIN, INPUT);
     Serial.println("[BUZZER] Disabled by safe firmware default");
 #endif
+}
+
+void HttpClient::setBuzzer(bool on)
+{
+#if ENABLE_BUZZER
+    digitalWrite(BUZZER_PIN, on ? BUZZER_ON_LEVEL : BUZZER_OFF_LEVEL);
+#else
+    (void)on;
+#endif
+}
+
+void HttpClient::selfTestBuzzer()
+{
+#if ENABLE_BUZZER
+    Serial.println("[BUZZER] Self-test beep");
+    setBuzzer(true);
+    delay(BUZZER_SELFTEST_MS);
+    setBuzzer(false);
+#endif
+}
+
+void HttpClient::setLocalAlarm(bool active)
+{
+    localAlarmActive_ = active;
+}
+
+bool HttpClient::localAlarm()
+{
+    return localAlarmActive_;
 }
 
 bool HttpClient::backendReachable()
@@ -210,6 +248,12 @@ void HttpClient::ackCommand(int commandId, const String &result)
 
 bool HttpClient::applyCommand(const String &command, int durationMs)
 {
+    if ((command == "buzzer_on" || command == "buzzer_off") && localAlarm())
+    {
+        Serial.println("[CMD] Buzzer command ignored: local alarm active");
+        return false;
+    }
+
 #if !ENABLE_BUZZER
     (void)durationMs;
     if (command == "buzzer_on" || command == "buzzer_off")
@@ -226,11 +270,11 @@ bool HttpClient::applyCommand(const String &command, int durationMs)
         Serial.print("[CMD] buzzer_on ");
         Serial.print(durationMs);
         Serial.println("ms");
-        digitalWrite(BUZZER_PIN, BUZZER_ON_LEVEL);
+        setBuzzer(true);
         if (durationMs > 0)
         {
             delay(durationMs);
-            digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
+            setBuzzer(false);
         }
         return true;
     }
@@ -238,7 +282,7 @@ bool HttpClient::applyCommand(const String &command, int durationMs)
     if (command == "buzzer_off")
     {
         Serial.println("[CMD] buzzer_off");
-        digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
+        setBuzzer(false);
         return true;
     }
 #endif
