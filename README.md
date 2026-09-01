@@ -20,9 +20,13 @@ SHT30
        +-> OLED                  immediate, works with no network
        +-> buzzer                local threshold alarm, ~1 s, no network
        +-> Huawei Cloud IoTDA    MQTT property report
-       +-> local backend         SQLite, IQR, web dashboard
-             +-> LLM narration   explains a state change; decides nothing
+       +-> local backend         SQLite, IQR
 ```
+
+The device is the product. Everything downstream records and displays what it
+decided; a local web dashboard and an optional LLM narration layer exist as
+development and verification tools, not as part of the monitoring path. See
+[Roadmap](#roadmap) for where they are headed.
 
 Pull the Wi-Fi and the device keeps assessing correctly. That is the point of
 the architecture, and it demonstrates in five seconds.
@@ -65,7 +69,7 @@ stall the 1 Hz safety task. See [hardware.md](docs/hardware.md) before wiring.
 - [backend_service.md](docs/backend_service.md) — backend modules and full HTTP API
 - [hardware.md](docs/hardware.md) — wiring, firmware variants, configuration
 - [cloud_iotda.md](docs/cloud_iotda.md) — IoTDA topics, product model, commands
-- [llm_reasoning.md](docs/llm_reasoning.md) — the narration layer
+- [llm_reasoning.md](docs/llm_reasoning.md) — the optional narration layer
 - [competition_writeup.md](docs/competition_writeup.md) — presentation wording
 
 ## Quick start (no hardware needed)
@@ -93,7 +97,10 @@ firmware's `EdgeReasoner`, so the payloads match what a real board sends:
 python3 scripts/simulate_sensor.py --interval 2
 ```
 
-Open <http://localhost:8080> for the live dashboard.
+Open <http://localhost:8080> to watch the ingest path — readings, the device's
+verdict, and online state. This view is how the backend is verified without
+hardware; on a deployed system that role belongs in the cloud (see
+[Roadmap](#roadmap)).
 
 To demonstrate a state the simulator does not reach on its own:
 
@@ -107,16 +114,25 @@ Run the backend smoke tests:
 python3 scripts/test_backend_api.py
 ```
 
-## Frontend development
+## Supporting tools
 
-The backend serves the built dashboard from `frontend/dist`. For live reload:
+Neither of these sits in the monitoring path. The device decides and alarms
+without them.
+
+**Local dashboard.** Served from `frontend/dist` by the backend. For live
+reload during development:
 
 ```bash
 cd frontend && npm install && npm run dev
 ```
 
 Vite proxies `/api` to `localhost:8080`. Rebuild with `npm run build` before
-committing — `frontend/dist` is checked in so the backend can serve it standalone.
+committing — `frontend/dist` is checked in so the backend can serve it
+standalone.
+
+**LLM narration.** Off by default. Turns a state change into a readable
+sentence; it is never asked what to conclude. See
+[llm_reasoning.md](docs/llm_reasoning.md).
 
 ## Firmware
 
@@ -140,17 +156,52 @@ URL. It is gitignored and must stay that way.
 
 ## Implementation status
 
+**Core — the monitoring path**
+
 | Component | Status |
 |---|---|
 | On-device reasoning, baseline learning, safety task | Implemented, host-tested |
-| OLED display | Implemented |
-| IoTDA MQTT property report | **Verified on hardware** — connects and publishes `Environment` + `EdgeReasoning` |
-| Backend ingest, storage, IQR, command queue, dashboard API | Implemented |
-| Web dashboard | Implemented |
-| LLM narration | Implemented, disabled by default |
-| Backend → IoTDA command downlink (`CloudSync`) | **Not implemented** — skeleton only |
 | Local threshold alarm (buzzer + OLED reason) | **Verified on hardware** — fires from the 1 Hz safety task, before the network is up |
 | Buzzer output | Verified active-low; `ENABLE_BUZZER 1` locally, `0` in the example config |
+| OLED display and status pages | Implemented |
+| IoTDA MQTT property report | **Verified on hardware** — connects and publishes `Environment` + `EdgeReasoning` |
+| Backend ingest, storage, IQR, command queue | Implemented |
+
+**Supporting tools — not part of the monitoring path**
+
+| Component | Status |
+|---|---|
+| `GET /api/readings` and local web dashboard | Implemented; a development and verification view, superseded by cloud visualisation on the roadmap |
+| LLM narration | Implemented, disabled by default |
+
+**Not implemented**
+
+| Component | Status |
+|---|---|
+| Backend → IoTDA command downlink (`CloudSync`) | Skeleton only — see [Roadmap](#roadmap) |
+
+## Roadmap
+
+The device side is complete and verified. What follows is the system around it.
+
+**Cloud visualisation.** Today's dashboard runs on a laptop beside the device
+and needs both on the same subnet — fine for development, wrong for a deployed
+system. The next step is IoTDA data forwarding into a hosted view, so the data
+is reachable without a machine on the local network.
+
+**Complete the cloud downlink.** `CloudSync` has no send path, so the
+backend → IoTDA → device command leg is not closed. The device already accepts
+and acknowledges commands over both transports; what is missing is the server
+side. Any command built on it must stay inside the existing allowlist.
+
+**Multiple devices and alarm tiering.** The backend already keys everything by
+`device_id` and enforces an allowlist, but there is no grouping, no per-device
+threshold configuration, and no escalation policy — one device's `warning` is
+treated exactly like another's.
+
+**A custom board.** The current build is a devkit with breakout modules on two
+I²C buses. Collapsing it into one PCB would remove the wiring as a failure mode
+and fix the buzzer's active level in hardware rather than in a macro.
 
 ## Security boundaries
 

@@ -47,10 +47,14 @@ per-minute rates, producing a state, a severity, a confidence, and a machine-
 readable reason code.
 
 The two combine: a hard-limit breach overrides everything; a baseline departure
-is reported only when the fixed layer sees nothing. The result drives the OLED
-immediately, then goes out over MQTT/MQTTS to Huawei Cloud IoTDA as a property
-report, and over HTTP to a local C++ service that stores it in SQLite and serves
-a web dashboard.
+is reported only when the fixed layer sees nothing. Crossing a local alarm
+threshold sounds the buzzer and writes the cause to the OLED within a second,
+with nothing in between.
+
+The same verdict then leaves the device twice: over MQTT/MQTTS to Huawei Cloud
+IoTDA as a standard property report, and over HTTP to a local C++ service that
+stores it in SQLite. Both are recording paths. Neither is consulted to produce
+the decision, and neither can prevent the alarm.
 
 ## System Loop
 
@@ -62,9 +66,23 @@ SHT30
   -> EdgeAssessment {state, severity, confidence, reason}
   -> OLED                           (immediate, no network)
   -> IoTDA property report          (Environment + EdgeReasoning services)
-  -> local backend                  (SQLite, IQR, dashboard)
-  -> optional LLM narration         (explains; decides nothing)
+  -> local backend                  (SQLite, IQR)
 ```
+
+Everything below the buzzer line is recording. The device has already decided
+and already alarmed by the time any of it runs.
+
+## Scope
+
+What is delivered is the **device**: sensing, learned baseline, deterministic
+assessment, and a local alarm that sounds within a second without a network.
+That path is complete and verified on hardware.
+
+Around it sit two recording paths — Huawei Cloud IoTDA over MQTTS, and a local
+C++ service with SQLite — both verified. A local web dashboard and an optional
+LLM narration layer exist and work, but they are development and verification
+tools rather than deliverables: the system monitors and alarms correctly with
+both switched off. Their production form is described under Future Work.
 
 ## Innovation Points
 
@@ -146,11 +164,13 @@ assessment — a state, a severity, a confidence, and a reason — is produced
 entirely on the microcontroller, in deterministic code, with no network call
 anywhere in the decision path.
 
-The device reports that assessment to Huawei Cloud IoTDA over MQTT/MQTTS as a
-standard property report, and to a local C++ service that stores it in SQLite
-and serves a live web dashboard. A language model is available to turn a state
-change into a readable explanation, but it is never asked what to conclude: no
-code path converts model output into an alert or a command.
+Crossing a local threshold sounds a buzzer and writes the cause to the OLED
+within a second. The device then reports the same assessment to Huawei Cloud
+IoTDA over MQTT/MQTTS as a standard property report, and to a local C++ service
+that stores it in SQLite. Both are recording paths: neither is consulted to
+reach the decision, and neither can prevent the alarm. A language model is
+available to turn a state change into a readable explanation, but it is never
+asked what to conclude.
 
 Compared with a cloud-decides architecture, this system keeps working when the
 network does not, responds in one second rather than one round trip, exposes no
@@ -167,24 +187,59 @@ Worth stating before a judge finds them:
 - The backend → IoTDA command downlink (`CloudSync`) is a skeleton. The device's
   own MQTT publish to IoTDA works and is verified; the server-side forwarding
   direction is not implemented.
+- Visualisation is local only. The dashboard runs on a machine on the same
+  subnet as the device, which is fine for development and wrong for deployment.
 - Wi-Fi, MQTT, and NTP status are shown on the OLED but are not part of the
-  ingest payload, so the web dashboard does not display them.
+  ingest payload, so nothing downstream can display them.
 - `config.example.h` ships with the buzzer disabled, so anyone reproducing the
   build must verify their module's active level before enabling it.
+- One device. The data model is keyed by `device_id` throughout, but there is no
+  grouping, per-device configuration, or alarm escalation.
+
+## Future Work
+
+The device side is finished. What remains is the system around it, and each item
+below is a consequence of a limitation stated above rather than a wish list.
+
+**Cloud visualisation.** Today's dashboard needs a laptop on the device's
+subnet. Forwarding IoTDA data into a hosted view removes that dependency and
+makes the data reachable from anywhere — which is what turns a demonstrator into
+something deployable. The device side needs no change: it already publishes its
+verdict as an `EdgeReasoning` service property.
+
+**Closing the cloud downlink.** `CloudSync` has no send path, so the
+backend → IoTDA → device leg is open. The device already accepts and
+acknowledges allowlisted commands over both transports, so this is server-side
+work. The constraint carries over unchanged: whatever is built must stay inside
+the existing allowlist, and it must not be able to silence a local alarm.
+
+**Multiple devices and alarm tiering.** Every table is already keyed by
+`device_id` and the ingest path enforces an allowlist, so the storage model
+extends without migration. What is missing is grouping, per-device thresholds,
+and an escalation policy — at present one device's `warning` is indistinguishable
+from another's.
+
+**A custom board.** The current build is a devkit with breakout modules across
+two I²C buses. A single PCB removes the wiring as a failure mode and fixes the
+buzzer's active level in hardware instead of a compile-time macro.
 
 ## Demo Script
 
-1. Show live readings and the device verdict on the dashboard.
-2. Warm the sensor. Within one cycle the OLED and the dashboard both show
-   `TEMP RISING`, with a confidence and the time the state began.
+The device carries the demo. Everything here works with the laptop closed.
+
+1. Power on. The buzzer self-tests within a second; the OLED carousel shows
+   readings, the verdict with its confidence, and the learned baseline range.
+2. Warm the sensor by hand. The OLED moves to `TEMP RISING`.
 3. Keep warming past 30 °C. The buzzer sounds and the OLED names the cause with
-   real numbers.
-4. **Pull the Wi-Fi and do it again.** The buzzer still sounds, at the same
-   speed, with the same reason on screen. This is the argument for the whole
-   architecture, and it takes ten seconds to make.
-5. Reconnect; backoff recovers and reporting resumes.
-6. Show `edge_assessments` in SQLite: a state transition timeline, not a wall of
-   duplicates.
+   real numbers: `ALARM  TEMP 31.2C LIMIT 30.0C`.
+4. **Pull the Wi-Fi and do it again.** The buzzer sounds at the same speed with
+   the same reason on screen. This is the argument for the whole architecture,
+   and it takes ten seconds to make.
+5. Stronger still: hold the sensor warm and press reset. The alarm fires while
+   the device is still connecting to Wi-Fi — it never waited for the network.
+6. Reconnect. Show the IoTDA console receiving `Environment` and `EdgeReasoning`
+   properties, and `edge_assessments` in SQLite as a state transition timeline
+   rather than a wall of duplicates.
 
 Without hardware: `python3 scripts/simulate_sensor.py --interval 2` drives the
 same path, and `--force-edge-state HARD_LIMIT` demonstrates the safety state.

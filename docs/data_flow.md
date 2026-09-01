@@ -35,7 +35,7 @@ EdgeAssessment
        -> IQR outlier detection over the sliding window
        -> SQLite: sensor_readings, edge_assessments, anomaly_events
        -> optional LLM narration (only on state change)
-       -> GET /api/readings -> web dashboard
+       -> GET /api/readings -> local dashboard (dev/verification view)
 ```
 
 Either path can fail without affecting the other, and neither can affect the
@@ -67,8 +67,9 @@ decision that was already made.
     is when that state began.
 12. If narration is enabled, a state change may trigger one LLM call to produce
     a human-readable explanation. Steady state produces no call.
-13. The dashboard polls `GET /api/readings` every 5 s and renders the device's
-    verdict unchanged.
+13. The local dashboard, when running, polls `GET /api/readings` every 5 s and
+    renders the device's verdict unchanged. Nothing depends on it — it is a way
+    to watch the ingest path, not part of it.
 14. The device polls `GET /api/commands/next` for queued OLED or buzzer commands
     and acknowledges them. While a local alarm is active, buzzer commands are
     refused — a real alarm is not something a network message gets to switch off.

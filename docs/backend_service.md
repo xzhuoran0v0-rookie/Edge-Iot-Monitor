@@ -16,7 +16,8 @@ Source: [`backend/src/`](../backend/src). Entry point: `main.cpp`.
    opinion, stored alongside the device's own.
 4. Persist to SQLite: `sensor_readings`, `edge_assessments`, `anomaly_events`,
    `analysis_log`, `device_commands`.
-5. Serve the dashboard snapshot on `GET /api/readings`.
+5. Serve a snapshot on `GET /api/readings` for the local dashboard — a
+   development and verification view, not part of the monitoring path.
 6. Queue and hand out device commands.
 7. Optionally call an LLM to narrate a state change (see
    [llm_reasoning.md](llm_reasoning.md)).
