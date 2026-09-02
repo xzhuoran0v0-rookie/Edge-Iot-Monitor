@@ -75,6 +75,9 @@ constexpr size_t MQTT_BUFFER_SIZE = 1024;
 constexpr unsigned long BASELINE_PERSIST_RETRY_MS = 5UL * 60UL * 1000UL;
 constexpr unsigned long NTP_SYNC_TIMEOUT_MS = 8000;
 constexpr unsigned long NTP_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
+// 趋势窗口时长 = EdgeReasoner::WINDOW_SIZE × 本值 = 12 × 10 s = 2 min，
+// 与 edge_reasoner.cpp 中阈值的整定条件一致。改感知周期不影响它。
+constexpr unsigned long EDGE_SAMPLE_INTERVAL_MS = 10000;
 constexpr uint8_t DRIFT_WINDOW_SIZE = 10;
 constexpr float DRIFT_MIN_TEMP_RISE_C = 2.0f;
 constexpr float DRIFT_MAX_HUMIDITY_RISE_PCT = 1.0f;
@@ -170,6 +173,7 @@ PubSubClient mqtt(tlsClient);
 
 unsigned long lastSafetySampleMs = 0;
 unsigned long lastReasoningReportMs = 0;
+unsigned long lastEdgeSampleMs = 0;
 unsigned long lastCloudReportMs = 0;
 
 static void initAdaptiveBaseline()
@@ -1264,7 +1268,18 @@ void loop()
             return;
         }
 
-        edgeReasoner.add(temp, humi, millis());
+        // EdgeReasoner 的窗口是固定的 12 个样本，而它的阈值（极差 4C/15%RH、
+        // 净升 0.8C）是按 2 分钟窗口整定的。若直接按感知周期喂，把感知周期从
+        // 10 s 缩到 2 s 就等于把窗口缩到 24 s——阈值没变，含义却变了：净升那
+        // 一条会取代速率成为实际门槛，"快升"需要的斜率反而被抬高。
+        //
+        // 所以推理按自己的固定节奏取样，与显示刷新率解耦。屏幕上的数字仍每
+        // 2 s 更新，趋势判据仍在 2 分钟的证据上做出。
+        if (reportNow - lastEdgeSampleMs >= EDGE_SAMPLE_INTERVAL_MS)
+        {
+            lastEdgeSampleMs = reportNow;
+            edgeReasoner.add(temp, humi, millis());
+        }
     }
 
     persistAdaptiveBaselineIfDue();

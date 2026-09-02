@@ -171,7 +171,8 @@ the IoTDA device secret, and the backend URL. Key settings:
 | Macro | Meaning |
 |---|---|
 | `DEVICE_ID` | Must match the backend allowlist (`devices.allowlist`) |
-| `REPORT_INTERVAL_MS` | Reporting cycle, default 10000 (8,640 reports/day) |
+| `SENSE_INTERVAL_MS` | Reasoning, OLED and local backend cycle, default 2000. Not metered — shorten it to make the display react faster |
+| `CLOUD_INTERVAL_MS` | IoTDA publish only, default 60000 (1,440 msg/day, 14% of a 10,000/day free tier) |
 | `SERVER_URL` | Local backend `/api/ingest` endpoint. Must be reachable from the **device's** subnet — a laptop on a different network is the usual cause of `[HTTP] POST failed code=-1` |
 | `ENABLE_BUZZER` | 0 in the example; 1 once the module is verified |
 | `BUZZER_ACTIVE_LEVEL` | `LOW` or `HIGH` — the level that makes your module sound |

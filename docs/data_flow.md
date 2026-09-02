@@ -21,8 +21,9 @@ the device behaves identically whether or not Wi-Fi is up.
 
 ## The reporting path (network)
 
-Once per `REPORT_INTERVAL_MS` (10 s), the same assessment leaves the device
-twice, over independent transports:
+The same assessment leaves the device over two independent transports, each on
+its own interval — the local one is free and fast, the cloud one is metered and
+slow:
 
 ```text
 EdgeAssessment
@@ -50,15 +51,18 @@ decision that was already made.
    the safety task, not `loop()`, so it does not wait for `setup()` to finish
    connecting to Wi-Fi, NTP and MQTT — an environment already over threshold at
    power-on would otherwise wait more than thirty seconds for a beep.
-3. Every 10 s the main loop takes the latest safety snapshot. If it is older
-   than 1.5 s, reporting is blocked rather than sending a stale value.
+3. Every 2 s (`SENSE_INTERVAL_MS`) the main loop takes the latest safety
+   snapshot. If it is older than 1.5 s, reporting is blocked rather than
+   sending a stale value.
 4. The reading is median-filtered, then observed by `AdaptiveBaseline`.
-5. `EdgeReasoner` adds the sample and assesses its 12-sample window.
+5. `EdgeReasoner` is fed on its own 10 s cadence, so its 12-sample window keeps
+   spanning 2 minutes whatever the sensing interval is, and assesses.
 6. `applyAdaptiveAssessment()` overlays the baseline result — `HARD_LIMIT`
    overrides everything, `BASELINE_SHIFT` applies only when the fixed layer said
    `NORMAL`.
 7. The OLED is updated. This happens regardless of network state.
-8. If MQTT is connected, one combined message publishes both services to IoTDA.
+8. Every 60 s (`CLOUD_INTERVAL_MS`), if MQTT is connected, one combined message
+   publishes both services to IoTDA — the only metered path.
 9. `HttpClient::postSensorData()` sends readings and the `edge` object to the
    local backend, with exponential backoff (10 s doubling to 5 min) on failure.
 10. The backend validates, stores, and runs IQR detection as an independent

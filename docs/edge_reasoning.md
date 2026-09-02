@@ -18,8 +18,14 @@ consulted to produce it. If Wi-Fi drops, the OLED keeps showing correct verdicts
 and the safety path keeps working. Nothing about the decision degrades.
 
 The reasoning is also cheap enough to be honest about: a 12-sample ring buffer
-and a handful of comparisons, running every 10 seconds on a microcontroller.
-There is no model on the device, and none is needed.
+and a handful of comparisons, on a microcontroller. There is no model on the
+device, and none is needed.
+
+The reasoner is fed on a fixed 10 s cadence (`EDGE_SAMPLE_INTERVAL_MS`) rather
+than at the sensing rate, so its 12-sample window always spans the 2 minutes its
+thresholds were tuned against. Feeding it faster would silently shrink the
+window and change what those thresholds mean — the net-rise condition would
+overtake the rate condition, raising the slope needed to call a rise "rapid".
 
 ## Two layers
 
@@ -73,7 +79,8 @@ installation and flags departures from it.
 | Warmup | 24 accepted samples | Enough to characterise a room, ~4 min at 10 s |
 | Band | center ± 3σ, clamped to [1.5, 5] °C and [5, 15] %RH | An unbounded band eventually accepts anything |
 | Learning rate | 0.02 center, 0.05 deviation | Slow: ordinary drift must not drag the band along |
-| Out-of-band samples | not learned | Otherwise a long anomaly trains itself into "normal" |
+| Out-of-band samples | not learned | Otherwise a passing anomaly drags the baseline along with it |
+| Sustained departure | relearn after 360 consecutive out-of-band samples (~1 h) | Without it a relocated device is stuck in `BASELINE_SHIFT` forever — see below |
 | Warmup clamping | ±3 °C / ±10 %RH per sample | One odd sample cannot define the initial center |
 | Persistence | NVS blob, magic + version + config signature + checksum | Survives reboot; a changed config invalidates the old blob |
 
@@ -82,6 +89,31 @@ limits, so **learning can never widen the safety boundary**. This is the
 property that makes an adaptive system safe to ship: the part that adapts and
 the part that guarantees are separate, and the adaptive part is bounded by the
 guaranteed one.
+
+### Relearning after a move
+
+Not learning from out-of-band samples protects the baseline from being dragged
+along by an anomaly, but taken alone it has a trap: a device carried to a
+different room sees *every* sample out of band, so nothing is learned, the band
+never moves again, and it reports `BASELINE_SHIFT` forever. Nothing is written
+back to NVS either — the persistence path is gated on `dirty_`, which only
+learning sets.
+
+So a departure sustained for `relearnAfterOutsideSamples` consecutive samples
+(360, about an hour at the 10 s interval) is taken as evidence that the learned
+band describes somewhere else, and learning restarts from scratch. Any in-band
+sample resets the counter, so a brief excursion never triggers it.
+
+This costs nothing in safety, and it is worth being precise about why. Alarm
+thresholds (`ALARM_TEMP_C`, `ALARM_HUMIDITY_PCT`) and hard limits are fixed
+human-set values that are never learned, and the buzzer is driven from the raw
+reading against those, not from the baseline. Relearning a warmer room changes
+which readings are called a *pattern shift*. It cannot change which ones sound
+the alarm.
+
+Set `relearnAfterOutsideSamples` to 0 to disable it and keep the band frozen
+once it leaves — appropriate only if a permanently stuck `BASELINE_SHIFT` is
+preferable to an adapted one.
 
 ### The overlay
 
@@ -160,8 +192,9 @@ without looking at the screen.
 
 ## What the device sends
 
-Every 10 seconds (`REPORT_INTERVAL_MS`), one assessment goes out over two
-independent paths, unchanged:
+The assessment goes out over two independent paths, unchanged, each on its own
+interval: the local backend every `SENSE_INTERVAL_MS` (2 s, free), and IoTDA
+every `CLOUD_INTERVAL_MS` (60 s, metered).
 
 **Huawei Cloud IoTDA** — one MQTT message, two services:
 
