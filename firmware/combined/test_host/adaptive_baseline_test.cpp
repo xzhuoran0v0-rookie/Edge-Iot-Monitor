@@ -232,6 +232,62 @@ void testNarrowConfigurationAndMillisWrap()
     AdaptiveBaseline changedPolicy(policyOnlyChange);
     CHECK(changedPolicy.restoreState(state, 0));
 }
+
+// A relocated device must not stay in BASELINE_SHIFT forever.
+//
+// Out-of-band samples are never learned, so before relearning existed the band
+// could not move again once the environment changed: every sample was outside,
+// nothing was learned, nothing was written back to NVS. A sustained departure
+// now restarts learning, while a brief one does not.
+void testSustainedDepartureRelearns()
+{
+    AdaptiveBaselineConfig config = testConfig();
+    config.relearnAfterOutsideSamples = 5;
+
+    AdaptiveBaseline baseline(config);
+    learnStableRoom(baseline);
+    CHECK(baseline.ready());
+
+    // A short excursion is an anomaly, not a move: it must not relearn, and
+    // returning in-band must clear the count.
+    for (int i = 0; i < 4; ++i)
+        CHECK(baseline.observe(31.0f, 55.0f).outsideAdaptiveBand);
+    CHECK(baseline.ready());
+    CHECK(baseline.observe(24.8f, 54.6f).learned);
+
+    // Sustained departure: the count restarts from zero, so it takes a further
+    // five consecutive samples rather than one.
+    for (int i = 0; i < 4; ++i)
+        CHECK(baseline.observe(31.0f, 55.0f).outsideAdaptiveBand);
+    CHECK(baseline.ready());
+
+    const AdaptiveBaselineResult relearn = baseline.observe(31.0f, 55.0f);
+    CHECK(!relearn.outsideAdaptiveBand);
+    CHECK(!baseline.ready());
+    CHECK(baseline.learnedSampleCount() == 0);
+    CHECK(baseline.dirty());
+
+    // It settles on the new environment.
+    for (int i = 0; i < 10; ++i)
+        baseline.observe(31.0f + (i % 3) * 0.1f, 55.0f);
+    CHECK(baseline.ready());
+    const AdaptiveBaselineResult settled = baseline.snapshot();
+    CHECK(settled.temperatureLowerC < 31.0f);
+    CHECK(settled.temperatureUpperC > 31.0f);
+
+    // Hard limits are untouched by relearning — the point of the whole design.
+    CHECK(settled.temperatureUpperC < config.hardTempUpperC);
+    CHECK(baseline.observe(46.0f, 55.0f).hardLimitExceeded);
+
+    // Relearning can be switched off entirely.
+    AdaptiveBaselineConfig frozenConfig = testConfig();
+    frozenConfig.relearnAfterOutsideSamples = 0;
+    AdaptiveBaseline frozen(frozenConfig);
+    learnStableRoom(frozen);
+    for (int i = 0; i < 50; ++i)
+        CHECK(frozen.observe(31.0f, 55.0f).outsideAdaptiveBand);
+    CHECK(frozen.ready());
+}
 }
 
 int main()
@@ -241,6 +297,7 @@ int main()
     testPersistenceRoundTripAndThrottle();
     testResetPersistence();
     testNarrowConfigurationAndMillisWrap();
+    testSustainedDepartureRelearns();
 
     if (failures != 0)
     {
