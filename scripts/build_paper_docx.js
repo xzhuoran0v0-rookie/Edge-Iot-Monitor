@@ -3,6 +3,7 @@ const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   WidthType, AlignmentType, LineRuleType, HeadingLevel, Footer,
   PageNumber, BorderStyle, ShadingType, PageBreak,
+  Math: DocxMath, MathRun, MathSubScript, MathFraction,
 } = require("docx");
 
 // ---- 版式常量（电赛要求）----
@@ -95,6 +96,20 @@ function table(header, rows, weights) {
   });
 }
 
+// ---- OMML 公式辅助（Word 原生公式，可在公式编辑器里编辑）----
+const mr = (t) => new MathRun(t);
+const sub = (b, sb) => new MathSubScript({
+  children: [mr(b)], subScript: [mr(sb)],
+});
+const frac = (num, den) => new MathFraction({
+  numerator: num, denominator: den,
+});
+const eq = (kids) => new Paragraph({
+  alignment: AlignmentType.CENTER,
+  spacing: { line: LINE, lineRule: LineRuleType.EXACT, before: 60, after: 60 },
+  children: [new DocxMath({ children: kids })],
+});
+
 const children = [];
 
 // ---------------- 标题与摘要 ----------------
@@ -158,21 +173,26 @@ children.push(p("判决与记录严格分离：蜂鸣器响起时，后两条通
 children.push(h1("2  理论分析与计算"));
 children.push(h2("2.1  自适应基线的带宽计算"));
 children.push(p("设第 k 个被接受样本为 x(k)，中心 μ 与平均偏差 σ 按指数移动平均递推："));
-children.push(...code([
-  "μ(k) = μ(k-1) + α · [ x(k) - μ(k-1) ]",
-  "σ(k) = σ(k-1) + β · [ |x(k) - μ(k-1)| - σ(k-1) ]",
+children.push(eq([
+  sub("μ", "k"), mr(" = "), sub("μ", "k−1"), mr(" + α("),
+  sub("x", "k"), mr(" − "), sub("μ", "k−1"), mr(")"),
+]));
+children.push(eq([
+  sub("σ", "k"), mr(" = "), sub("σ", "k−1"), mr(" + β(|"),
+  sub("x", "k"), mr(" − "), sub("μ", "k−1"), mr("| − "), sub("σ", "k−1"), mr(")"),
 ]));
 children.push(p("取 α = 0.02、β = 0.05。学习率取小值使单个样本对中心的影响不超过 2%，正常昼夜漂移不会显著拖动基线。判定带为："));
-children.push(...code([
-  "[ μ - w , μ + w ] ,   w = clamp( 3σ , w_min , w_max )",
-  "温度  w ∈ [1.5, 5.0] °C     湿度  w ∈ [5, 15] %RH",
+children.push(eq([
+  mr("["), sub("μ", "k"), mr(" − w, "), sub("μ", "k"), mr(" + w],   w = clamp(3"),
+  sub("σ", "k"), mr(", "), sub("w", "min"), mr(", "), sub("w", "max"), mr(")"),
 ]));
+children.push(p("温度取 w ∈ [1.5, 5.0] °C，湿度取 w ∈ [5, 15] %RH。"));
 children.push(p("上界的必要性在于：无界的 3σ 在长期噪声下会持续扩张，最终接受任何输入。"));
 
 children.push(h2("2.2  有界性：学习不能放宽安全边界"));
 children.push(p("设固定硬限为 [L, U]（温度 −10…45 °C，湿度 5…95 %RH），保护间隔 g（温度 0.5 °C，湿度 2 %RH）。实际判定带取："));
-children.push(...code([
-  "[ max( μ - w , L + g ) ,  min( μ + w , U - g ) ]",
+children.push(eq([
+  mr("[max(μ − w, L + g),  min(μ + w, U − g)]"),
 ]));
 children.push(p("由该式直接得到：对任意学习历史，判定带上界恒有 μ + w ≤ U − g < U。**即无论基线学到什么，都不可能把判定边界推到硬限之外。**"));
 children.push(p("更强的一条来自系统分层：告警阈值与硬限均为编译期常量，不参与任何学习过程，蜂鸣器由原始读数直接与其比较驱动。因此基线学习**只改变哪些读数被称为“模式偏移”，不改变哪些读数触发告警**。这使得允许基线移动这件事本身是安全的。"));
@@ -183,13 +203,21 @@ children.push(p("故引入判据：连续带外样本数 n ≥ N(r) 时判定为
 
 children.push(h2("2.4  趋势速率判据"));
 children.push(p("对 12 样本窗口首末样本，按分钟归一化："));
-children.push(...code([
-  "v = [ x(n-1) - x(0) ] / [ ( t(n-1) - t(0) ) / 60 ]",
+children.push(eq([
+  mr("v = "),
+  frac(
+    [mr("60("), sub("x", "n−1"), mr(" − "), sub("x", "0"), mr(")")],
+    [sub("t", "n−1"), mr(" − "), sub("t", "0")],
+  ),
 ]));
 children.push(p("取 v ≥ 1.2 °C/min 且净升 ≥ 0.8 °C 判为温度快升。按速率而非绝对变化量判定的原因是：8 °C 的变化在 1 小时内属常态，在 8 秒内对室内空气不具物理合理性，二者仅由速率区分。"));
 
 children.push(h2("2.5  告警时延"));
-children.push(p("告警判据在 1 Hz 安全任务内求值，该任务在网络初始化之前创建。最坏时延为 t(max) = T(sample) + t(GPIO) ≈ 1 s。若将求值置于主循环，则须等待 setup() 中 Wi-Fi（超时 20 s）、NTP、MQTT 全部完成，最坏时延超过 30 s。二者差异已实测验证（4.3 节）。"));
+children.push(p("告警判据在 1 Hz 安全任务内求值，该任务在网络初始化之前创建，最坏时延为："));
+children.push(eq([
+  sub("t", "max"), mr(" = "), sub("T", "sample"), mr(" + "), sub("t", "GPIO"), mr(" ≈ 1 s"),
+]));
+children.push(p("若将求值置于主循环，则须等待 setup() 中 Wi-Fi（超时 20 s）、NTP、MQTT 全部完成，最坏时延超过 30 s。二者差异已实测验证（4.3 节）。"));
 
 // ---------------- 3 ----------------
 children.push(h1("3  电路与程序设计"));
