@@ -33,9 +33,9 @@ receives conclusions rather than producing them.
 ## Technical Route
 
 An ESP32-S3 reads an SHT30 over I²C. A dedicated FreeRTOS task samples at 1 Hz
-and checks fixed safety limits, independent of all network activity. Every 10
-seconds the main loop median-filters the reading and passes it through two
-reasoning layers:
+and checks fixed safety limits and alarm thresholds, independent of all network
+activity. Every 2 seconds the main loop median-filters the reading and passes it
+through two reasoning layers:
 
 `AdaptiveBaseline` learns the ambient range of the actual installation —
 incremental center and deviation, bounded bands, slow learning rates,
@@ -128,8 +128,10 @@ both switched off. Their production form is described under Future Work.
 8. **No credential can leak from the device**, because the device never calls a
    model. There is nothing on it to extract.
 
-9. **Zero marginal cost per decision.** 8,640 assessments per device per day,
-   none billable.
+9. **Zero marginal cost per decision.** 43,200 assessments per device per day
+   at the 2 s sensing interval, all made on the chip, none billable. Cloud
+   traffic is throttled separately to 1,440 messages/day — 14% of a 10,000/day
+   free tier, which is what lets one allowance cover about six devices.
 
 10. **The alarm fires before the network exists.** Threshold evaluation lives in
     the 1 Hz safety task, not the main loop, so a device powered on into an

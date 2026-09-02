@@ -49,10 +49,14 @@
 // cannot be broken by Wi-Fi, the cloud, or an API quota.
 //
 // These are deliberately lower than the AdaptiveBaseline hard limits (45 C /
-// 95 %RH) so the alarm is reachable in a demo: 30 C is about what breathing on
-// the sensor or cupping it in your hand produces.
+// 95 %RH) so the alarm is reachable without special equipment.
+//
+// Cupping the sensor in a hand trips HUMIDITY first, not temperature: palm skin
+// is near saturation and fills the enclosed air within seconds, while heat has
+// to conduct through the housing. To raise temperature without moisture, hold a
+// warm object 1-2 cm away.
 #define ALARM_TEMP_C 30.0f
-#define ALARM_HUMIDITY_PCT 80.0f
+#define ALARM_HUMIDITY_PCT 70.0f
 #define IOTDA_ALARM_SERVICE_ID "Alarm"
 #define IOTDA_BUZZER_COMMAND_NAME "BuzzerControl"
 

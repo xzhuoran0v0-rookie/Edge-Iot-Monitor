@@ -103,13 +103,16 @@ in between.
 
 ```c
 #define ALARM_TEMP_C 30.0f
-#define ALARM_HUMIDITY_PCT 80.0f
+#define ALARM_HUMIDITY_PCT 70.0f
 ```
 
 These sit deliberately below the `AdaptiveBaseline` hard limits (45 °C / 95 %RH):
-the hard limits are a safety boundary, while these are the everyday alarm point,
-and 30 °C is about what cupping the sensor in your hand produces — so the alarm
-is demonstrable without heating anything.
+the hard limits are a safety boundary, these are the everyday alarm point.
+
+Cupping the sensor in a hand trips **humidity** first, not temperature — palm
+skin is near saturation and fills the enclosed air within seconds, while heat
+must conduct through the housing. To raise temperature without moisture, hold a
+warm object 1–2 cm away.
 
 Evaluation runs inside the **1 Hz safety task**, not the main loop. That
 distinction matters: `loop()` does not run until `setup()` finishes, and setup
@@ -134,7 +137,7 @@ rather than a bare label:
 | Condition | On screen |
 |---|---|
 | Temperature alarm | `ALARM  TEMP 31.2°C LIMIT 30.0°C` |
-| Humidity alarm | `ALARM  HUMIDITY 82.5% LIMIT 80.0%` |
+| Humidity alarm | `ALARM  HUMIDITY 82.5% LIMIT 70.0%` |
 | Hard limit, upper | `HARD LIMIT  TEMP 46.1°C MAX 45.0°C` |
 | Hard limit, lower | `HARD LIMIT  TEMP -12.0°C MIN -10.0°C` |
 | Sensor faults | `SHT30 OFFLINE`, `SHT30 INVALID DATA`, `SENSOR DRIFT` |

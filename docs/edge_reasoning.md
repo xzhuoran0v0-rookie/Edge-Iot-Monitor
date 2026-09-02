@@ -76,11 +76,11 @@ installation and flags departures from it.
 
 | Property | Value | Why |
 |---|---|---|
-| Warmup | 24 accepted samples | Enough to characterise a room, ~4 min at 10 s |
+| Warmup | ~4 min, converted to a sample count from `SENSE_INTERVAL_MS` | Enough to characterise a room. Expressed as a duration so changing the sensing rate does not change how much evidence it learns from |
 | Band | center ± 3σ, clamped to [1.5, 5] °C and [5, 15] %RH | An unbounded band eventually accepts anything |
 | Learning rate | 0.02 center, 0.05 deviation | Slow: ordinary drift must not drag the band along |
 | Out-of-band samples | not learned | Otherwise a passing anomaly drags the baseline along with it |
-| Sustained departure | relearn after 360 consecutive out-of-band samples (~1 h) | Without it a relocated device is stuck in `BASELINE_SHIFT` forever — see below |
+| Sustained departure | relearn after ~1 h out of band, likewise converted from `SENSE_INTERVAL_MS` | Without it a relocated device is stuck in `BASELINE_SHIFT` forever — see below |
 | Warmup clamping | ±3 °C / ±10 %RH per sample | One odd sample cannot define the initial center |
 | Persistence | NVS blob, magic + version + config signature + checksum | Survives reboot; a changed config invalidates the old blob |
 
@@ -99,9 +99,10 @@ never moves again, and it reports `BASELINE_SHIFT` forever. Nothing is written
 back to NVS either — the persistence path is gated on `dirty_`, which only
 learning sets.
 
-So a departure sustained for `relearnAfterOutsideSamples` consecutive samples
-(360, about an hour at the 10 s interval) is taken as evidence that the learned
-band describes somewhere else, and learning restarts from scratch. Any in-band
+So a departure sustained for `relearnAfterOutsideSamples` consecutive samples —
+derived from `SENSE_INTERVAL_MS` so that it always means about an hour — is
+taken as evidence that the learned band describes somewhere else, and learning
+restarts from scratch. Any in-band
 sample resets the counter, so a brief excursion never triggers it.
 
 This costs nothing in safety, and it is worth being precise about why. Alarm
@@ -133,15 +134,15 @@ humidity ≤ 5 %RH or ≥ 95 %RH.
 ## The safety task
 
 Hard-limit detection runs on its own FreeRTOS task at 1 Hz, pinned to a core,
-separate from the 10-second reasoning and reporting cycle.
+separate from every reporting cycle.
 
 - **Sampling is never delayed by network work.** MQTT reconnects, HTTP retries,
   and backoff cannot stretch the safety interval.
 - **A stale sample blocks reporting.** Readings older than 1.5 s
   (`SAFETY_SAMPLE_MAX_AGE_MS`) are refused rather than sent, so a stalled task
   cannot cause a confident report of an old value.
-- **Hard-limit transitions are latched** until the next 10-second cloud slot, so
-  a condition that clears quickly is still reported — while the daily message
+- **Hard-limit transitions are latched** until the next cloud slot, so a
+  condition that clears quickly is still reported — while the daily message
   budget stays predictable.
 - **Clearing requires 3 consecutive safe samples** (`HARD_LIMIT_CLEAR_SAFE_SAMPLES`),
   which stops a value sitting on the boundary from oscillating.
@@ -153,12 +154,13 @@ sounds the buzzer and writes the reason to the OLED:
 
 ```c
 #define ALARM_TEMP_C 30.0f
-#define ALARM_HUMIDITY_PCT 80.0f
+#define ALARM_HUMIDITY_PCT 70.0f
 ```
 
 These sit below the hard limits (45 °C / 95 %RH) on purpose. Hard limits are a
 safety boundary that learning may never widen; these are the everyday alarm
-point, low enough that cupping the sensor in your hand demonstrates it.
+point. Cupping the sensor trips humidity first — palm skin is near saturation,
+while heat has to conduct through the housing.
 
 Three properties make this the part of the system that cannot be broken from
 outside:

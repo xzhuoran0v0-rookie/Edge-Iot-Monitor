@@ -91,8 +91,9 @@ command cannot switch it off while it is active.
 because it never calls a model. This is a consequence of the architecture, not
 a mitigation bolted onto it.
 
-**Cost is zero per decision.** 8,640 assessments per device per day, none of
-them billable.
+**Cost is zero per decision.** 43,200 assessments per device per day at the 2 s
+sensing interval, none of them billable. Cloud traffic is throttled separately
+to 1,440 messages/day, 14% of a 10,000/day free tier.
 
 ## Implementation status
 
