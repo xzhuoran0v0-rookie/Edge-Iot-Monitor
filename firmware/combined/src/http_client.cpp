@@ -42,10 +42,9 @@ void HttpClient::initActuators()
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
 #else
-    // The current buzzer module/wiring has not passed hardware verification.
-    // Keep the GPIO high-impedance so remote commands cannot energise it.
+    // Not hardware-verified: keep the GPIO high-impedance so no command can
+    // energise it. Nothing is logged here — this runs before Serial.begin().
     pinMode(BUZZER_PIN, INPUT);
-    Serial.println("[BUZZER] Disabled by safe firmware default");
 #endif
 }
 

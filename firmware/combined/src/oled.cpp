@@ -210,7 +210,8 @@ bool OLED::init()
     button_changed_ms_ = millis();
 
     clear();
-    Serial.println("[OLED] Init OK; BOOT button advances pages");
+    // 不在这里打日志：init() 跑在 Serial.begin() 之前，为的是尽早清屏。
+    // 调用方拿到返回值后再打印。
     return true;
 }
 

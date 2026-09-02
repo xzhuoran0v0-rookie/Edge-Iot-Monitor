@@ -56,8 +56,25 @@
 #define IOTDA_ALARM_SERVICE_ID "Alarm"
 #define IOTDA_BUZZER_COMMAND_NAME "BuzzerControl"
 
-// Report interval for both the local and cloud paths.
-#define REPORT_INTERVAL_MS 10000
+// ---------------- Timing ----------------
+// Two separate intervals. One value for both would force a choice between a
+// responsive display and a small cloud message budget.
+//
+// SENSE_INTERVAL_MS drives reasoning, the OLED, and the local backend — all
+// free. Shorten it to make the screen react faster.
+//
+// CLOUD_INTERVAL_MS drives the IoTDA publish only, which is metered. Against a
+// 10 000 msg/day free tier:
+//   10 s -> 8 640/day (86%, one device fills the quota)
+//   30 s -> 2 880/day (29%)
+//   60 s -> 1 440/day (14%, roughly six devices share one quota)
+// Lengthening it costs nothing locally, and is what makes more than one device
+// fit in a free allowance.
+//
+// The local alarm is unaffected by both: it runs in the 1 Hz safety task and
+// responds within a second regardless of what is set here.
+#define SENSE_INTERVAL_MS 2000
+#define CLOUD_INTERVAL_MS 60000
 
 // TLS note:
 // MQTTS 8883 validates the IoTDA server certificate with the CA in src/certs.h.

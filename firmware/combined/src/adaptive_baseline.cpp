@@ -276,6 +276,10 @@ uint32_t AdaptiveBaseline::calculateConfigSignature(
     hashValue(hash, config.deviationLearningRate);
     hashValue(hash, config.warmupTempDeltaClampC);
     hashValue(hash, config.warmupHumidityDeltaClampPct);
+    // Deliberately excluded: persistEveryLearnedSamples, minPersistIntervalMs
+    // and relearnAfterOutsideSamples. They are policy, not semantics — they do
+    // not change what a stored center/deviation means, so changing one must not
+    // throw away an otherwise valid baseline.
     return hash;
 }
 
@@ -297,6 +301,7 @@ uint32_t AdaptiveBaseline::calculateStateChecksum(
 
 void AdaptiveBaseline::clearRuntimeState(bool persistenceRequired)
 {
+    consecutiveOutsideSamples_ = 0;
     learnedSamples_ = 0;
     temperatureCenterC_ = 0.0f;
     humidityCenterPct_ = 0.0f;
@@ -607,6 +612,25 @@ AdaptiveBaselineResult AdaptiveBaseline::observe(
         humidityPct < humidityLower || humidityPct > humidityUpper;
     if (tempOutside || humidityOutside)
     {
+        consecutiveOutsideSamples_ =
+            saturatingIncrement(consecutiveOutsideSamples_);
+
+        // A sustained departure means the learned band describes somewhere
+        // else. Without this the band can never move again: out-of-band
+        // samples are not learned, so a relocated device stays in
+        // BASELINE_SHIFT forever and nothing is ever written back to NVS.
+        if (config_.relearnAfterOutsideSamples > 0 &&
+            consecutiveOutsideSamples_ >=
+                config_.relearnAfterOutsideSamples)
+        {
+            reset();
+            consecutiveOutsideSamples_ = 0;
+            lastStatus_ = AdaptiveBaselineStatus::LEARNING;
+            AdaptiveBaselineResult result = makeResult(lastStatus_);
+            result.validSample = true;
+            return result;
+        }
+
         lastStatus_ =
             AdaptiveBaselineStatus::OUTSIDE_ADAPTIVE_BAND;
         AdaptiveBaselineResult result = makeResult(lastStatus_);
@@ -617,6 +641,8 @@ AdaptiveBaselineResult AdaptiveBaseline::observe(
         return result;
     }
 
+    // Back inside the band: the departure was transient, not a relocation.
+    consecutiveOutsideSamples_ = 0;
     learnReady(temperatureC, humidityPct);
     lastStatus_ = AdaptiveBaselineStatus::READY;
     AdaptiveBaselineResult result = makeResult(lastStatus_);

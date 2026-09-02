@@ -48,6 +48,21 @@ struct AdaptiveBaselineConfig
     float centerLearningRate = 0.02f;
     float deviationLearningRate = 0.05f;
 
+    // Consecutive out-of-band samples after which the baseline is assumed to
+    // belong to a different environment and is relearned from scratch. Any
+    // in-band sample resets the count, so this only fires on a sustained
+    // departure — a device moved to another room, not a passing anomaly.
+    //
+    // Safety does not depend on this. Alarm thresholds and hard limits are
+    // fixed, human-set values that are never learned, so relearning a warmer
+    // room changes which readings are called a *pattern shift*, never which
+    // ones sound the buzzer.
+    //
+    // 0 disables relearning: the baseline then stays frozen forever once it
+    // leaves its band, which is the behaviour to pick only if a stuck
+    // BASELINE_SHIFT is preferable to an adapted one.
+    uint32_t relearnAfterOutsideSamples = 360;
+
     // Winsorization used only while collecting the initial baseline. It limits
     // how much one otherwise hard-safe sample can move the initial center.
     float warmupTempDeltaClampC = 3.0f;
@@ -226,6 +241,7 @@ private:
     float seedTemperatureC_ = 0.0f;
     float seedHumidityPct_ = 0.0f;
 
+    uint32_t consecutiveOutsideSamples_ = 0;
     uint32_t learnedSincePersist_ = 0;
     uint32_t lastPersistMs_ = 0;
     bool persistedOnce_ = false;

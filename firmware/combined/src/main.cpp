@@ -26,6 +26,23 @@
 
 // 本地阈值告警。刻意低于 AdaptiveBaseline 的硬限（45C / 95%RH），
 // 硬限是安全边界，这个是演示和日常可达的告警点。
+// 旧配置只有一个 REPORT_INTERVAL_MS，两者都从它推导，保持向后兼容。
+#ifndef SENSE_INTERVAL_MS
+#ifdef REPORT_INTERVAL_MS
+#define SENSE_INTERVAL_MS REPORT_INTERVAL_MS
+#else
+#define SENSE_INTERVAL_MS 2000
+#endif
+#endif
+
+#ifndef CLOUD_INTERVAL_MS
+#ifdef REPORT_INTERVAL_MS
+#define CLOUD_INTERVAL_MS REPORT_INTERVAL_MS
+#else
+#define CLOUD_INTERVAL_MS 60000
+#endif
+#endif
+
 #ifndef ALARM_TEMP_C
 #define ALARM_TEMP_C 30.0f
 #endif
@@ -67,9 +84,22 @@ constexpr char BASELINE_NVS_KEY[] = "state";
 AdaptiveBaselineConfig makeAdaptiveBaselineConfig()
 {
     AdaptiveBaselineConfig config;
-    // Save once when learning first completes, then at most about once per
-    // hour at the current 10-second reasoning interval.
-    config.persistEveryLearnedSamples = 360;
+    // These are counted in SAMPLES, but what they mean is a DURATION. Deriving
+    // them from SENSE_INTERVAL_MS keeps that meaning fixed: shortening the
+    // sensing interval must make the screen more responsive, not make the
+    // baseline learn from a fifth of the evidence or relearn five times sooner.
+    constexpr unsigned long kWarmupMs = 4UL * 60UL * 1000UL;   // 4 min
+    constexpr unsigned long kRelearnMs = 60UL * 60UL * 1000UL; // 1 h
+
+    config.warmupSamples =
+        static_cast<uint16_t>(kWarmupMs / SENSE_INTERVAL_MS);
+    config.relearnAfterOutsideSamples =
+        static_cast<uint32_t>(kRelearnMs / SENSE_INTERVAL_MS);
+
+    // Write throttle: bounded by wall clock as well, so flash wear does not
+    // scale with the sensing rate.
+    config.persistEveryLearnedSamples =
+        static_cast<uint16_t>(kRelearnMs / SENSE_INTERVAL_MS);
     config.minPersistIntervalMs = 60UL * 60UL * 1000UL;
     return config;
 }
@@ -84,6 +114,11 @@ Preferences baselinePreferences;
 bool baselinePreferencesReady = false;
 bool baselinePersistAttempted = false;
 unsigned long lastBaselinePersistAttemptMs = 0;
+// 告警页上显示过的数值（放大十倍取整）。只在显示内容真会变化时重绘，
+// 避免每秒无谓地全屏刷一次 I2C。
+int lastAlarmTempTenths = INT32_MIN;
+int lastAlarmHumTenths = INT32_MIN;
+bool baselineWasReady = false;
 bool invalidSampleAlert = false;
 bool thresholdAlarmActive = false;
 uint8_t alarmSafeSamples = 0;
@@ -676,6 +711,7 @@ static void applyThresholdAlarm()
     if (breached)
     {
         alarmSafeSamples = 0;
+
         if (!thresholdAlarmActive)
         {
             thresholdAlarmActive = true;
@@ -683,12 +719,25 @@ static void applyThresholdAlarm()
             HttpClient::setBuzzer(true);
             // 打印屏幕上的原话，排查时不用凑到 OLED 前面看。
             // 串口里 '[' 就是屏幕上的度数符号。
-            const String reason =
-                formatThresholdReason(snapshot.temperature,
-                                      snapshot.humidity);
             Serial.print("[ALARM] buzzer on, OLED: ");
-            Serial.println(reason);
-            OLED::showAlert(reason);
+            Serial.println(
+                formatThresholdReason(snapshot.temperature,
+                                      snapshot.humidity));
+        }
+
+        // 告警页独占屏幕，轮播不会把它换走 —— 但页上的数字必须跟着实测值走。
+        // 只在跳变时写一次的话，屏幕会停在触发瞬间的快照上：手还捂着、温度还在
+        // 涨，显示却纹丝不动，看上去像死机而不是像在监测。
+        const int tempTenths = lroundf(snapshot.temperature * 10.0f);
+        const int humTenths = lroundf(snapshot.humidity * 10.0f);
+        if (tempTenths != lastAlarmTempTenths ||
+            humTenths != lastAlarmHumTenths)
+        {
+            lastAlarmTempTenths = tempTenths;
+            lastAlarmHumTenths = humTenths;
+            OLED::showAlert(
+                formatThresholdReason(snapshot.temperature,
+                                      snapshot.humidity));
         }
         return;
     }
@@ -704,6 +753,8 @@ static void applyThresholdAlarm()
 
     thresholdAlarmActive = false;
     alarmSafeSamples = 0;
+    lastAlarmTempTenths = INT32_MIN;
+    lastAlarmHumTenths = INT32_MIN;
     HttpClient::setBuzzer(false);
     HttpClient::setLocalAlarm(false);
     OLED::clearAlert();
@@ -992,6 +1043,15 @@ static bool publishToCloud(float temp, float humi,
 
 void setup()
 {
+    // 第一件事就把蜂鸣器引脚拉到静音电平。放在 Serial.begin + delay(3000)
+    // 之后的话，开机前三秒 GPIO 是悬空的，低电平触发的模块在这段时间会一直响。
+    HttpClient::initActuators();
+
+    // 屏幕在烧录期间保持着上一版固件的最后一帧 —— 芯片在 bootloader 里，
+    // 没人去改显存。所以新固件一起来就先清屏，别等 delay(3000) 之后，
+    // 否则每次烧完都要盯着三秒钟的残留画面。
+    const bool oledReady = OLED::init();
+
     Serial.begin(115200);
     delay(3000);
 
@@ -1001,11 +1061,29 @@ void setup()
                   ESP.getFlashChipSize(),
                   ESP.getPsramSize());
 
-    initAdaptiveBaseline();
-    HttpClient::initActuators();
-    HttpClient::selfTestBuzzer();
+    // 把编译进来的阈值打出来。这些值分散在 config.h 和几处 #ifndef 兜底里，
+    // 靠读源码推断哪个生效过一次错，就会在演示时对着一个自己以为的数字调试。
+    Serial.printf("[CONFIG] alarm temp=%.1fC humidity=%.1f%% "
+                  "buzzer=%s active=%s sense=%lums cloud=%lums\n",
+                  ALARM_TEMP_C,
+                  ALARM_HUMIDITY_PCT,
+                  ENABLE_BUZZER ? "on" : "off",
+                  BUZZER_ACTIVE_LEVEL == LOW ? "LOW" : "HIGH",
+                  (unsigned long)SENSE_INTERVAL_MS,
+                  (unsigned long)CLOUD_INTERVAL_MS);
 
-    OLED::init();
+#if ENABLE_BUZZER
+    HttpClient::selfTestBuzzer();
+#else
+    Serial.println("[BUZZER] Disabled by safe firmware default");
+#endif
+
+    Serial.println(oledReady
+                       ? "[OLED] Init OK; BOOT button advances pages"
+                       : "[OLED] Init FAILED");
+
+    initAdaptiveBaseline();
+
     OLED::showStatus("STARTING");
 
     // Sensor health is independent of network availability.
@@ -1123,7 +1201,7 @@ void loop()
     if (pendingEvent.pending &&
         mqtt.connected() &&
         millis() - lastCloudReportMs >=
-            REPORT_INTERVAL_MS)
+            CLOUD_INTERVAL_MS)
     {
         lastCloudReportMs = millis();
         const AdaptiveBaselineResult pendingLimit =
@@ -1145,7 +1223,7 @@ void loop()
     }
 
     const unsigned long reportNow = millis();
-    if (reportNow - lastReasoningReportMs < REPORT_INTERVAL_MS)
+    if (reportNow - lastReasoningReportMs < SENSE_INTERVAL_MS)
     {
         delay(20);
         return;
@@ -1206,6 +1284,14 @@ void loop()
     Serial.print(assessment.confidence, 2);
     Serial.print(" reason=");
     Serial.println(assessment.reasonCode);
+    if (latestBaseline.status == AdaptiveBaselineStatus::LEARNING &&
+        baselineWasReady)
+    {
+        Serial.println("[BASELINE] Sustained departure — relearning this "
+                       "environment from scratch");
+    }
+    baselineWasReady = latestBaseline.ready;
+
     Serial.print("[BASELINE] status=");
     Serial.print(AdaptiveBaseline::statusName(latestBaseline.status));
     Serial.print(" progress=");
@@ -1216,11 +1302,11 @@ void loop()
     OLED::updateDashboard(
         temp, humi, assessment, latestBaseline, mqtt.connected());
 
-    // Exactly one combined MQTT message carries both services each routine
-    // cycle: 8,640 reports/day at the configured 10-second interval.
+    // One combined MQTT message carries both services per cloud slot. This is
+    // the only metered path, so it is throttled separately from reasoning.
     if (!loadPendingHardLimitEvent().pending &&
         mqtt.connected() &&
-        reportNow - lastCloudReportMs >= REPORT_INTERVAL_MS &&
+        reportNow - lastCloudReportMs >= CLOUD_INTERVAL_MS &&
         safetySnapshotStillCurrent(safetySnapshot))
     {
         lastCloudReportMs = reportNow;
