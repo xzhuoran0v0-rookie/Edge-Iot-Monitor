@@ -105,12 +105,12 @@ them billable.
 | Local backend ingest, storage, IQR, command queue | Implemented |
 | `GET /api/readings` and local web dashboard | Implemented — development and verification view, not part of the monitoring path |
 | LLM narration (DeepSeek primary, Ollama fallback) | Implemented, disabled by default |
-| Backend → IoTDA command downlink (`CloudSync`) | **Not implemented** — skeleton only |
 | Local threshold alarm (buzzer + OLED reason) | **Verified on hardware** — evaluated in the 1 Hz safety task |
 | Buzzer output | Verified active-low; `ENABLE_BUZZER 1` locally, `0` in the example config |
 
-`CloudSync` is the one row that does not work: it has no send path. It is stated
-here rather than implied to work. The buzzer ships disabled in the example
+Every row above is implemented. The device publishes to IoTDA itself, so no
+server-side forwarding component exists — an earlier `CloudSync` skeleton was
+removed rather than left in place implying a capability nothing used. The buzzer ships disabled in the example
 config for the same reason it was disabled here until it was tested — nobody
 else's module and wiring have been checked, and guessing the active level wrong
 makes it sound continuously from power-on.

@@ -64,14 +64,6 @@ struct AppConfig
     // ---- local command API security ----
     std::string command_api_key;
 
-    // ---- cloud sync ----
-    bool cloud_enabled = false;
-    std::string cloud_provider = "huawei";
-    std::string cloud_endpoint;
-    std::string cloud_project_id;
-    std::string cloud_device_id;
-    std::string cloud_credential;
-
     // ---- convenience ----
     /** 构造完整的 Ollama URL，如 "http://127.0.0.1:11434" */
     std::string ollamaUrl() const

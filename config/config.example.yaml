@@ -146,20 +146,6 @@ logging:
   console: true              # Also print logs to stdout
 
 # ------------------------------------------------------------
-# Cloud Sync — Huawei IoTDA
-# ------------------------------------------------------------
-# Set enabled: true and fill in credential after device registration.
-# credential is the device secret assigned by IoTDA — NEVER commit this file.
-# ------------------------------------------------------------
-cloud:
-  enabled: false             # Set to true after registration
-  provider: "huawei"         # Cloud provider (currently only huawei)
-  endpoint: ""               # e.g. "https://iotda.cn-north-4.myhuaweicloud.com"
-  project_id: ""             # Huawei Cloud project ID
-  device_id: ""              # Device ID registered in IoTDA
-  credential: ""             # Device secret (HMAC-SHA256 signing key)
-
-# ------------------------------------------------------------
 # Firmware pin assignment — NOT configured here.
 #
 # The backend never touches GPIO, and duplicating pin numbers in this file only

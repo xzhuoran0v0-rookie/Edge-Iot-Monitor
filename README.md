@@ -174,12 +174,6 @@ URL. It is gitignored and must stay that way.
 | `GET /api/readings` and local web dashboard | Implemented; a development and verification view, superseded by cloud visualisation on the roadmap |
 | LLM narration | Implemented, disabled by default |
 
-**Not implemented**
-
-| Component | Status |
-|---|---|
-| Backend → IoTDA command downlink (`CloudSync`) | Skeleton only — see [Roadmap](#roadmap) |
-
 ## Roadmap
 
 The device side is complete and verified. What follows is the system around it.
@@ -189,10 +183,12 @@ and needs both on the same subnet — fine for development, wrong for a deployed
 system. The next step is IoTDA data forwarding into a hosted view, so the data
 is reachable without a machine on the local network.
 
-**Complete the cloud downlink.** `CloudSync` has no send path, so the
-backend → IoTDA → device command leg is not closed. The device already accepts
-and acknowledges commands over both transports; what is missing is the server
-side. Any command built on it must stay inside the existing allowlist.
+**Cloud command downlink.** Commands reach the device today over the local
+HTTP queue, and the firmware also accepts IoTDA `BuzzerControl` / `ShowMessage`.
+What does not exist is a server that issues them through IoTDA's application-side
+REST API — that needs AK/SK credentials and is the one leg of the loop still
+driven by hand. Anything built on it must stay inside the existing allowlist and
+must not be able to silence a local alarm.
 
 **Multiple devices and alarm tiering.** The backend already keys everything by
 `device_id` and enforces an allowlist, but there is no grouping, no per-device

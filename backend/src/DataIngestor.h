@@ -8,7 +8,6 @@
 
 class DataFilter;
 class AIQueryDispatcher;
-class CloudSync;
 
 /**
  * @brief 数据接入模块(HTTP 入口)
@@ -26,8 +25,6 @@ class CloudSync;
  *   数据存储（StorageEngine）
  *        ↓
  *   AI分析（AIQueryDispatcher）
- *        ↓
- *   云同步（CloudSync）
  *
  */
 class DataIngestor
@@ -42,7 +39,6 @@ public:
         StorageEngine &storage,
         DataFilter &filter,
         AIQueryDispatcher &ai,
-        CloudSync &cloud,
         double temp_min = -40.0, double temp_max = 85.0,
         double hum_min = 0.0, double hum_max = 100.0,
         std::vector<std::string> allowlist = {},
@@ -85,7 +81,6 @@ private:
      *  3.进行异常检测(IQR)
      *  4.写入数据库
      *  5.触发AI分析
-     *  6.云同步(optional)
      *
      */
     void handleIngest(const std::string &raw_json,
@@ -159,7 +154,6 @@ private:
     StorageEngine &storage_; ///< 数据库存储模块
     DataFilter &filter_;     ///< 异常检测模块(IQR算法)
     AIQueryDispatcher &ai_;  ///< 本地AI分析模块
-    CloudSync &cloud_;       ///< 云端同步模块
 
     //=========== 校验范围（来自 AppConfig）============//
     double temp_min_, temp_max_;

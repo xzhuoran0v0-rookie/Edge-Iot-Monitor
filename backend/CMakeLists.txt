@@ -44,7 +44,6 @@ if(EDGE_BUILD_SERVER)
     src/DataFilter.cpp
     src/AIQueryDispatcher.cpp
     src/ConfigLoader.cpp
-    src/CloudSync.cpp
     src/httplib.h
     src/json.hpp
   )

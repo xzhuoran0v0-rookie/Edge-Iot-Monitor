@@ -2,7 +2,6 @@
 #include "DataFilter.h"
 #include "AIQueryDispatcher.h"
 #include "DataIngestor.h"
-#include "CloudSync.h"
 #include "ConfigLoader.h"
 
 #include <iostream>
@@ -97,23 +96,9 @@ int main(int argc, char **argv)
         std::cout << "[WARN] deepseek.enabled=true but no api_key "
                      "(set deepseek.api_key or DEEPSEEK_API_KEY) — using Ollama only\n";
 
-    // 4. 初始化云端同步（占位 — 注册后填充 endpoint/credential）
-    std::cout << "[INIT] CloudSync...\n";
-    CloudSync cloud(
-        storage,
-        cfg.cloud_endpoint,
-        cfg.cloud_project_id,
-        cfg.cloud_device_id,
-        cfg.cloud_credential,
-        cfg.cloud_enabled
-    );
-    std::cout << "[OK] CloudSync ready"
-              << (cloud.isEnabled() ? " (ENABLED)" : " (disabled — set cloud.enabled in config.yaml)")
-              << "\n";
-
-    // 5. 初始化数据接入层
+    // 4. 初始化数据接入层
     std::cout << "[INIT] DataIngestor...\n";
-    DataIngestor ingestor(storage, filter, ai, cloud,
+    DataIngestor ingestor(storage, filter, ai,
                            cfg.temp_min, cfg.temp_max,
                            cfg.hum_min,  cfg.hum_max,
                            cfg.device_allowlist,

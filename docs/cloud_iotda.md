@@ -27,7 +27,7 @@ display or record it — not recompute it.
 |---|---|
 | Device → IoTDA property report (MQTT/MQTTS) | **Verified on hardware** — connects over MQTTS and publishes both services every 10 s |
 | IoTDA → device command downlink | Topics and format implemented in firmware. A `BuzzerControl` command is rejected with `local_alarm_active` while a local threshold alarm is sounding. |
-| Backend → IoTDA data forwarding / command API | **Not implemented** — `CloudSync` is a skeleton |
+| Backend → IoTDA application-side API | **Not built.** Not needed for data — the device publishes directly. Issuing commands this way would need AK/SK credentials. |
 
 The "Data Forwarding" section below therefore describes an integration design,
 not shipped behaviour.
@@ -227,7 +227,9 @@ The richer version still follows the official IoTDA command structure because cu
 
 ## Data Forwarding
 
-Not implemented — this is the design for a future `CloudSync` send path.
+Not built — this is the design sketch for a hosted view, listed under Future
+Work. Nothing in this repository forwards data anywhere: the device publishes to
+IoTDA itself, so a server-side copy would be duplicate data.
 
 IoTDA would forward reported device data to a cloud service through a rule or
 integration path. That service would:

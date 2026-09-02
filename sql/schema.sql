@@ -96,10 +96,3 @@ CREATE TABLE IF NOT EXISTS device_commands (
 
 CREATE INDEX IF NOT EXISTS idx_device_commands_device_status
     ON device_commands (device_id, status, id);
-
--- Cloud sync progress tracker (used by CloudSync)
--- One row per table, stores the last synced row id.
-CREATE TABLE IF NOT EXISTS sync_status (
-    table_name      TEXT PRIMARY KEY,
-    last_synced_id  INTEGER NOT NULL DEFAULT 0
-);

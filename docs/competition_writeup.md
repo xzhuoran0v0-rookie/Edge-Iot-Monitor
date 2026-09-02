@@ -96,42 +96,52 @@ both switched off. Their production form is described under Future Work.
    safety boundary. Separating the part that adapts from the part that
    guarantees is what makes an adaptive system safe to deploy.
 
-3. **A long anomaly cannot become the new normal.** Samples outside the band are
-   not learned from, so a week-long heatwave does not train the device into
-   accepting it.
+3. **What the device learns can never change what it alarms on.** Alarm
+   thresholds and hard limits are fixed, human-set values that are never
+   learned, and the adaptive band is clamped inside them. Relearning a warmer
+   room changes which readings are called a *pattern shift*; it can never
+   change which ones sound the buzzer. That separation is what makes it safe to
+   let the baseline move at all.
 
-4. **The system says when it does not trust itself.** `UNSTABLE` /
+4. **A passing anomaly and a relocation are told apart by duration.** Samples
+   outside the band are never learned from, so a brief excursion cannot drag
+   the baseline along. But a departure sustained for an hour means the learned
+   band describes somewhere else, and the device recalibrates. Without that, a
+   relocated device is stuck reporting `BASELINE_SHIFT` forever — out-of-band
+   samples are not learned, so the band can never move again.
+
+5. **The system says when it does not trust itself.** `UNSTABLE` /
    `ERRATIC_SIGNAL` is checked before every other rule: if the signal is too
    erratic to trust, the device reports that instead of a confident conclusion
    drawn from noise.
 
-5. **The LLM explains rather than decides — by construction.** No code path
+6. **The LLM explains rather than decides — by construction.** No code path
    converts model output into an alert or a command, and the prompt says so.
    Freed from being load-bearing, the model stops hedging and stops inflating
    severity.
 
-6. **Narration fires on state change, not on a record count.** A count-based
+7. **Narration fires on state change, not on a record count.** A count-based
    trigger re-analyses identical steady-state data forever, so the model can
    only repeat its input back while consuming quota. Steady state produces no
    call at all.
 
-7. **No credential can leak from the device**, because the device never calls a
+8. **No credential can leak from the device**, because the device never calls a
    model. There is nothing on it to extract.
 
-8. **Zero marginal cost per decision.** 8,640 assessments per device per day,
+9. **Zero marginal cost per decision.** 8,640 assessments per device per day,
    none billable.
 
-9. **The alarm fires before the network exists.** Threshold evaluation lives in
-   the 1 Hz safety task, not the main loop, so a device powered on into an
-   already-unsafe room sounds within a second instead of waiting out Wi-Fi, NTP
-   and MQTT connection. While it is sounding, no remote command can switch it
-   off. Both properties were verified on hardware.
+10. **The alarm fires before the network exists.** Threshold evaluation lives in
+    the 1 Hz safety task, not the main loop, so a device powered on into an
+    already-unsafe room sounds within a second instead of waiting out Wi-Fi, NTP
+    and MQTT connection. While it is sounding, no remote command can switch it
+    off. Both properties were verified on hardware.
 
-10. **The alert names its cause.** The OLED shows which quantity, its value, and
+11. **The alert names its cause.** The OLED shows which quantity, its value, and
     the limit it crossed — `ALARM  TEMP 31.2C LIMIT 30.0C` — rather than a bare
     label a person still has to interpret.
 
-11. **Degradation is designed, not incidental.** Exponential backoff on the
+12. **Degradation is designed, not incidental.** Exponential backoff on the
     backend, independent MQTT retry, stale-sample guards that block reporting
     rather than sending a bad value, and a dashboard that distinguishes "backend
     down" from "device silent".
@@ -184,9 +194,9 @@ move.
 
 Worth stating before a judge finds them:
 
-- The backend → IoTDA command downlink (`CloudSync`) is a skeleton. The device's
-  own MQTT publish to IoTDA works and is verified; the server-side forwarding
-  direction is not implemented.
+- Commands are issued from the local backend's own HTTP queue. Issuing them
+  through IoTDA's application-side API (AK/SK) is not built; the device accepts
+  such commands, but nothing sends them.
 - Visualisation is local only. The dashboard runs on a machine on the same
   subnet as the device, which is fine for development and wrong for deployment.
 - Wi-Fi, MQTT, and NTP status are shown on the OLED but are not part of the
@@ -207,11 +217,11 @@ makes the data reachable from anywhere — which is what turns a demonstrator in
 something deployable. The device side needs no change: it already publishes its
 verdict as an `EdgeReasoning` service property.
 
-**Closing the cloud downlink.** `CloudSync` has no send path, so the
-backend → IoTDA → device leg is open. The device already accepts and
-acknowledges allowlisted commands over both transports, so this is server-side
-work. The constraint carries over unchanged: whatever is built must stay inside
-the existing allowlist, and it must not be able to silence a local alarm.
+**Cloud command downlink.** The device already accepts and acknowledges
+allowlisted commands over both transports, and the uplink to IoTDA is verified.
+What is missing is a server issuing commands through IoTDA's application-side
+API. The constraint carries over unchanged: whatever is built must stay inside
+the existing allowlist, and must not be able to silence a local alarm.
 
 **Multiple devices and alarm tiering.** Every table is already keyed by
 `device_id` and the ingest path enforces an allowlist, so the storage model
@@ -232,7 +242,7 @@ The device carries the demo. Everything here works with the laptop closed.
 2. Warm the sensor by hand. The OLED moves to `TEMP RISING`.
 3. Keep warming past 30 °C. The buzzer sounds and the OLED names the cause with
    real numbers: `ALARM  TEMP 31.2C LIMIT 30.0C`.
-4. **Pull the Wi-Fi and do it again.** The buzzer sounds at the same speed with
+5. **Pull the Wi-Fi and do it again.** The buzzer sounds at the same speed with
    the same reason on screen. This is the argument for the whole architecture,
    and it takes ten seconds to make.
 5. Stronger still: hold the sensor warm and press reset. The alarm fires while

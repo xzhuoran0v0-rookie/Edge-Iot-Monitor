@@ -1,7 +1,6 @@
 #include "DataIngestor.h"
 #include "DataFilter.h"
 #include "AIQueryDispatcher.h"
-#include "CloudSync.h"
 
 #include "httplib.h"
 #include "nlohmann/json.hpp"
@@ -83,12 +82,11 @@ DataIngestor::DataIngestor(
     StorageEngine &storage,
     DataFilter &filter,
     AIQueryDispatcher &ai,
-    CloudSync &cloud,
     double temp_min, double temp_max,
     double hum_min,  double hum_max,
     std::vector<std::string> allowlist,
     std::string command_api_key)
-    : storage_(storage), filter_(filter), ai_(ai), cloud_(cloud)
+    : storage_(storage), filter_(filter), ai_(ai)
     , temp_min_(temp_min), temp_max_(temp_max)
     , hum_min_(hum_min),   hum_max_(hum_max)
     , allowlist_(std::move(allowlist))
@@ -344,10 +342,7 @@ void DataIngestor::handleIngest(const std::string &raw_json,
     // 5.AI 叙述（稳态下 onNewData 内部直接返回，不产生 LLM 调用）
     ai_.onNewData(readings, has_anomaly);
 
-    // 6.云同步
-    cloud_.onNewData(readings);
-
-    // 7.返回响应（含 AI 分析，供设备端 OLED 显示）
+    // 6.返回响应（含 AI 分析，供设备端 OLED 显示）
     std::string analysis = ai_.getLastAnalysis(readings[0].device_id);
     json resp = {
         {"status", "ok"},

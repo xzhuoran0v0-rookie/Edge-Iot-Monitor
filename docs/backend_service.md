@@ -32,7 +32,6 @@ Source: [`backend/src/`](../backend/src). Entry point: `main.cpp`.
 | `DataFilter` | IQR outlier detection over a time window |
 | `AIQueryDispatcher` | LLM narration on a background worker thread |
 | `ConfigLoader` | `config/config.yaml` into a struct, defaults for missing keys |
-| `CloudSync` | **Skeleton only.** No send path implemented. |
 
 ## HTTP API
 
@@ -190,7 +189,6 @@ so there is one source of truth. Current `schema_version` is 3.
 | `anomaly_events` | Server-side IQR detections |
 | `analysis_log` | LLM prompts and responses |
 | `device_commands` | Command queue with status and ack |
-| `sync_status` | Reserved for `CloudSync` |
 
 ## Configuration
 
@@ -209,16 +207,18 @@ Notable keys:
 | `validation.*` | Accepted reading ranges |
 | `ai.enabled` | Master switch for LLM narration |
 | `deepseek.*` / `ollama.*` | Narration backends |
-| `cloud.*` | Reserved for `CloudSync` |
 
 `DEEPSEEK_API_KEY` in the environment takes priority over the file.
 
 ## Not implemented
 
-`CloudSync` counts pending records and logs them. There is no send path, and no
-backend → IoTDA command downlink. The device's own MQTT publish to IoTDA is
-separate and does work; this gap is specifically the *server* forwarding
-direction.
+Nothing here forwards data to Huawei Cloud. The device publishes to IoTDA
+directly over MQTTS, so a server-side copy would be duplicate data; the
+`CloudSync` skeleton that once implied otherwise was removed.
+
+Issuing IoTDA commands from the server — the application-side REST API with
+AK/SK — is genuinely not built. Commands currently reach the device through this
+backend's own HTTP queue.
 
 ## Build and test
 
