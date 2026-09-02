@@ -1056,6 +1056,13 @@ void setup()
     // 否则每次烧完都要盯着三秒钟的残留画面。
     const bool oledReady = OLED::init();
 
+    // 自检紧跟引脚初始化，不等 Serial.begin 后面那 3 秒。它不需要串口，而放在
+    // 延时之后会让"上电即自检"变成"上电三秒后自检" —— 对着板子看的人只会
+    // 觉得它启动很慢。
+#if ENABLE_BUZZER
+    HttpClient::selfTestBuzzer();
+#endif
+
     Serial.begin(115200);
     delay(3000);
 
@@ -1076,11 +1083,9 @@ void setup()
                   (unsigned long)SENSE_INTERVAL_MS,
                   (unsigned long)CLOUD_INTERVAL_MS);
 
-#if ENABLE_BUZZER
-    HttpClient::selfTestBuzzer();
-#else
-    Serial.println("[BUZZER] Disabled by safe firmware default");
-#endif
+    Serial.println(ENABLE_BUZZER
+                       ? "[BUZZER] Self-test beep done at power-on"
+                       : "[BUZZER] Disabled by safe firmware default");
 
     Serial.println(oledReady
                        ? "[OLED] Init OK; BOOT button advances pages"
