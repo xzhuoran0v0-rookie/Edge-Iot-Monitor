@@ -1336,11 +1336,18 @@ void loop()
     }
     HttpClient::postSensorData(temp, humi, assessment);
 
+    // 本地服务是验证夹具，不是数据链路的一环 —— 判决在芯片上，记录在 IoTDA。
+    // 它掉线时设备的行为一个字节都不变，所以不该抢占屏幕报一屏 "OFFLINE"：
+    // 那会把"可选的落库目标不在"呈现成"设备出故障了"。
+    // WiFi 与 MQTT 的状态仍然上屏，因为那条是云端记录的通路。
     const bool backendNow = HttpClient::backendReachable();
     if (backendNow != backendWasReachable)
     {
         backendWasReachable = backendNow;
-        OLED::showStatus(backendNow ? "BACKEND OK" : "BACKEND OFFLINE");
+        Serial.println(backendNow
+                           ? "[BACKEND] Local recorder reachable"
+                           : "[BACKEND] Local recorder unreachable — "
+                             "optional sink, device unaffected");
     }
 
     if (backendNow)

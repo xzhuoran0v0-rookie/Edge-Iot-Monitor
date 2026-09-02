@@ -135,7 +135,7 @@ drives the same path from a laptop.
 | Failure | What happens |
 |---|---|
 | Wi-Fi down | Reasoning, OLED, and safety task unaffected. Reports resume on reconnect. |
-| Backend unreachable | Exponential backoff, 10 s doubling to 5 min. OLED shows `BACKEND OFFLINE`. |
+| Local recorder unreachable | Exponential backoff, 10 s doubling to 5 min, logged on serial. Nothing appears on the OLED: the recorder is a verification sink, not part of the monitoring path, and showing its absence as a device status would misrepresent what failed. |
 | IoTDA/MQTT down | Retry every 5 s. The local HTTP path is independent and keeps working. |
 | Sensor read fails | Reporting blocked rather than sending a bad value; OLED shows the fault. |
 | Stale safety sample (>1.5 s) | Reporting blocked for that cycle. |

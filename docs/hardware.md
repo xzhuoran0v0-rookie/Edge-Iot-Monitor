@@ -138,6 +138,7 @@ rather than a bare label:
 | Hard limit, upper | `HARD LIMIT  TEMP 46.1°C MAX 45.0°C` |
 | Hard limit, lower | `HARD LIMIT  TEMP -12.0°C MIN -10.0°C` |
 | Sensor faults | `SHT30 OFFLINE`, `SHT30 INVALID DATA`, `SENSOR DRIFT` |
+| Link status | `WIFI OFFLINE`, `MQTT OFFLINE` — the cloud record path. The local recorder is deliberately **not** shown: it is a verification sink whose absence changes nothing the device does. |
 
 The font covers `0x20`–`0x5B`, with `[` remapped to the degree glyph (see the
 tail of `font5x7` in `oled.cpp`), so digits, `%`, `.` and `°` all render. The

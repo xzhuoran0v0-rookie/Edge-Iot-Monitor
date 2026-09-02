@@ -111,7 +111,7 @@ bool HttpClient::postSensorData(float temp, float humi,
     {
         if (consecutiveFailures_ > 0)
         {
-            Serial.println("[HTTP] Backend recovered");
+            Serial.println("[BACKEND] Recorder recovered; resuming uploads");
             consecutiveFailures_ = 0;
         }
         backoffUntilMs_ = 0;
@@ -131,11 +131,13 @@ bool HttpClient::postSensorData(float temp, float humi,
         }
     }
     backoffUntilMs_ = now + backoffMs;
-    Serial.print("[HTTP] POST failed code=");
+    // 措辞刻意不写成错误：本地落库是可选目标，它不可达既不影响判决，也不影响
+    // 告警和云端上报。写成 "POST failed" 会让串口看起来像系统出了问题。
+    Serial.print("[BACKEND] Recorder unreachable (HTTP ");
     Serial.print(code);
-    Serial.print(" backoff=");
+    Serial.print("), retry in ");
     Serial.print(backoffMs / 1000);
-    Serial.println("s");
+    Serial.println("s — reasoning, alarm and cloud unaffected");
     return false;
 }
 
