@@ -2,7 +2,7 @@ const fs = require("fs");
 const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
   WidthType, AlignmentType, LineRuleType, HeadingLevel, Footer,
-  PageNumber, BorderStyle, ShadingType, PageBreak,
+  PageNumber, BorderStyle, ShadingType, PageBreak, ImageRun,
   Math: DocxMath, MathRun, MathSubScript, MathFraction,
 } = require("docx");
 
@@ -68,6 +68,27 @@ const code = (lines) => lines.map((l, i) => new Paragraph({
              after: i === lines.length - 1 ? 60 : 0 },
   indent: { left: 240 },
 }));
+
+// 插图：宽度按正文栏宽（CONTENT_W twips → px @96dpi），高度按原图比例
+const figure = (file, srcW, srcH) => {
+  const w = Math.round(CONTENT_W / 15);
+  return new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: { line: 240, lineRule: LineRuleType.AUTO, before: 120, after: 60 },
+    children: [new ImageRun({
+      type: "png",
+      data: fs.readFileSync(file),
+      transformation: { width: w, height: Math.round((w * srcH) / srcW) },
+    })],
+  });
+};
+
+// 图题：五号宋体居中，无首行缩进
+const caption = (t) => new Paragraph({
+  alignment: AlignmentType.CENTER,
+  spacing: { line: LINE, lineRule: LineRuleType.EXACT, before: 0, after: 120 },
+  children: [new TextRun({ text: t, size: SMALL, font: SONG })],
+});
 
 // 表格：columnWidths 与每个 cell 的 width 都要给，单位 DXA
 function table(header, rows, weights) {
@@ -152,21 +173,9 @@ children.push(p("**本系统选择方案三**：判决全部由 MCU 上的确定
 children.push(p("本系统仍保留一个大语言模型接口，但其职责被严格限定为把状态变化翻译成人类可读的语句。代码中不存在任何将模型输出转换为告警或控制指令的路径，该功能默认关闭，关闭后系统监测与告警功能完整。"));
 
 children.push(h2("1.3  系统总体方案"));
-children.push(...code([
-  "        +--------------------------------------------+",
-  "        |  ESP32-S3                  [唯一判决层]     |",
-  " SHT30->|  1 Hz 安全任务: 物理有效性 + 硬限 + 告警阈值 |",
-  "        |  中值滤波 -> AdaptiveBaseline (学习正常范围) |",
-  "        |           -> EdgeReasoner (阈值 + 趋势速率)  |",
-  "        |  => EdgeAssessment {状态,严重度,置信度,原因} |",
-  "        +---+-------------+--------------+------------+",
-  "            |             |              |",
-  "     +------v-----+ +-----v------+ +-----v----------+",
-  "     | 蜂鸣器+OLED| |   IoTDA    | | 本地服务        |",
-  "     | <1s 无网络 | |   MQTTS    | | SQLite + IQR   |",
-  "     +------------+ +------------+ +----------------+",
-  "      [告警出口]      [云端记录]     [记录/验证夹具]",
-]));
+children.push(p("系统总体结构如图 1 所示。虚线框内为 ESP32-S3 片上决策域，采样、滤波、基线学习、限值判定与告警输出全部在框内闭环；虚线框右侧的云平台与本地服务只接收框内已经得出的结论，不参与任何判定。"));
+children.push(figure("docs/figures/fig1_system_block.png", 960, 790));
+children.push(caption("图 1  系统总体方框图"));
 children.push(p("判决与记录严格分离：蜂鸣器响起时，后两条通路尚未开始工作；两条通路任一失效或同时失效，均不影响已经发生的告警。"));
 
 // ---------------- 2 ----------------
