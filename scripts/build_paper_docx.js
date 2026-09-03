@@ -125,9 +125,10 @@ const sub = (b, sb) => new MathSubScript({
 const frac = (num, den) => new MathFraction({
   numerator: num, denominator: den,
 });
+// 公式段落用自动行距：分式比一行高，固定 22pt 行距会把分母裁掉
 const eq = (kids) => new Paragraph({
   alignment: AlignmentType.CENTER,
-  spacing: { line: LINE, lineRule: LineRuleType.EXACT, before: 60, after: 60 },
+  spacing: { line: LINE, lineRule: LineRuleType.AUTO, before: 120, after: 120 },
   children: [new DocxMath({ children: kids })],
 });
 
