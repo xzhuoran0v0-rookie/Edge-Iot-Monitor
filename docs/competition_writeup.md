@@ -34,8 +34,10 @@ receives conclusions rather than producing them.
 
 An ESP32-S3 reads an SHT30 over I²C. A dedicated FreeRTOS task samples at 1 Hz
 and checks fixed safety limits and alarm thresholds, independent of all network
-activity. Every 2 seconds the main loop median-filters the reading and passes it
-through two reasoning layers:
+activity. The main loop then median-filters that reading and passes it through
+two reasoning layers, on an interval that adapts between 2 s and 10 s according
+to how much this room actually moves — the sampling rate itself never changes,
+because sampling rate is alarm latency:
 
 `AdaptiveBaseline` learns the ambient range of the actual installation —
 incremental center and deviation, bounded bands, slow learning rates,
@@ -128,8 +130,8 @@ both switched off. Their production form is described under Future Work.
 8. **No credential can leak from the device**, because the device never calls a
    model. There is nothing on it to extract.
 
-9. **Zero marginal cost per decision.** 43,200 assessments per device per day
-   at the 2 s sensing interval, all made on the chip, none billable. Cloud
+9. **Zero marginal cost per decision.** Up to 43,200 assessments per device per
+   day at the 2 s floor, all made on the chip, none billable. Cloud
    traffic is throttled separately to 1,440 messages/day — 14% of a 10,000/day
    free tier, which is what lets one allowance cover about six devices.
 
@@ -143,7 +145,19 @@ both switched off. Their production form is described under Future Work.
     the limit it crossed — `ALARM  TEMP 31.2C LIMIT 30.0C` — rather than a bare
     label a person still has to interpret.
 
-12. **Degradation is designed, not incidental.** Exponential backoff on the
+12. **What the device learns has a second consumer.** The learned deviation is
+    not only compared against — it decides how often the reading is processed
+    and reported. A calm room stretches toward 10 s, anything unsettled snaps
+    back to 2 s and holds there for 30 s. Both bounds come from physics: the
+    sensor's own response time below, the reasoner's 12-sample window above.
+
+13. **Only the recording path is allowed to vary.** Sampling, hard limits and
+    the alarm stay at a fixed 1 Hz, because sampling rate *is* alarm latency.
+    Separating those from the reporting path early is precisely what made the
+    adaptive interval safe to add afterwards — a design where detection and
+    reporting share one cycle could not have it at all.
+
+14. **Degradation is designed, not incidental.** Exponential backoff on the
     backend, independent MQTT retry, stale-sample guards that block reporting
     rather than sending a bad value, and a dashboard that distinguishes "backend
     down" from "device silent".
@@ -230,6 +244,17 @@ the existing allowlist, and must not be able to silence a local alarm.
 extends without migration. What is missing is grouping, per-device thresholds,
 and an escalation policy — at present one device's `warning` is indistinguishable
 from another's.
+
+**Hardware-assisted alarms, and genuinely adaptive sampling.** The reporting
+interval adapts today, but the SHT30 itself is still read at a fixed 1 Hz,
+because that rate is the alarm latency. The way to have both is the sensor's own
+`ALERT` pin: program the alarm thresholds into the chip, let it raise an
+interrupt on a crossing, and the MCU is then free to sample as slowly as it
+likes — with a latency better than 1 Hz polling, not worse. The module already
+brings that pin out (`AL`); what it needs is one wire to a free GPIO and the
+alert-limit registers, which also means moving the sensor into periodic
+measurement mode. That last part is why it is not in this version: it changes a
+sampling path that is currently verified.
 
 **A custom board.** The current build is a devkit with breakout modules across
 two I²C buses. A single PCB removes the wiring as a failure mode and fixes the

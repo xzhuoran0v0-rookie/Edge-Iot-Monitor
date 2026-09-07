@@ -40,6 +40,7 @@ public:
      * @brief Store the latest values and redraw the active carousel page.
      */
     static void updateDashboard(float temp, float humi,
+                                unsigned long senseIntervalMs,
                                 const EdgeAssessment &assessment,
                                 const AdaptiveBaselineResult &baseline,
                                 bool cloudConnected);
@@ -118,6 +119,7 @@ private:
     static float latest_temp_;
     static float latest_humi_;
     static float latest_confidence_;
+    static unsigned long latest_sense_interval_ms_;
     static bool latest_cloud_connected_;
     static String latest_state_;
     static String latest_severity_;

@@ -51,12 +51,16 @@ decision that was already made.
    the safety task, not `loop()`, so it does not wait for `setup()` to finish
    connecting to Wi-Fi, NTP and MQTT — an environment already over threshold at
    power-on would otherwise wait more than thirty seconds for a beep.
-3. Every 2 s (`SENSE_INTERVAL_MS`) the main loop takes the latest safety
-   snapshot. If it is older than 1.5 s, reporting is blocked rather than
-   sending a stale value.
+3. Every `senseIntervalMs` — 2 s when anything is happening, stretching toward
+   10 s in a calm room — the main loop takes the latest safety snapshot. If it
+   is older than 1.5 s, reporting is blocked rather than sending a stale value.
+   Note that this is the *processing* interval, not the sampling rate: the
+   sensor is still read once a second above, because sampling rate is alarm
+   latency.
 4. The reading is median-filtered, then observed by `AdaptiveBaseline`.
-5. `EdgeReasoner` is fed on its own 10 s cadence, so its 12-sample window keeps
-   spanning 2 minutes whatever the sensing interval is, and assesses.
+5. `EdgeReasoner` is fed on its own fixed 10 s cadence, so its 12-sample window
+   keeps spanning 2 minutes however the reporting interval is currently
+   varying, and assesses.
 6. `applyAdaptiveAssessment()` overlays the baseline result — `HARD_LIMIT`
    overrides everything, `BASELINE_SHIFT` applies only when the fixed layer said
    `NORMAL`.

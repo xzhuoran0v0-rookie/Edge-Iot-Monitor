@@ -78,6 +78,26 @@ constexpr unsigned long NTP_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
 // 趋势窗口时长 = EdgeReasoner::WINDOW_SIZE × 本值 = 12 × 10 s = 2 min，
 // 与 edge_reasoner.cpp 中阈值的整定条件一致。改感知周期不影响它。
 constexpr unsigned long EDGE_SAMPLE_INTERVAL_MS = 10000;
+
+// 感知周期自适应：环境安静就拉长，一有动静就缩回。两端都是写死的硬边界，
+// 与自适应基线是同一个模式——会变的量被不变的量夹住。
+//
+// 下界 = SHT30 的热响应 τ63 ≈ 2 s，采得更快没有新信息。
+// 上界 = EDGE_SAMPLE_INTERVAL_MS，推理窗口每 10 s 要一个样本，采得比它还慢
+//        窗口就喂不满，2 分钟的趋势判据会失去依据。
+// 两端都由物理约束决定，不是调出来的。
+constexpr unsigned long SENSE_INTERVAL_MIN_MS = SENSE_INTERVAL_MS;
+constexpr unsigned long SENSE_INTERVAL_MAX_MS = EDGE_SAMPLE_INTERVAL_MS;
+// 变慢每次只走一步，变快一步到位——见 nextSenseInterval()。
+constexpr unsigned long SENSE_INTERVAL_STEP_MS = 500;
+// 学到的平均偏差达到这个值就算“晃得厉害”，取最快档。半带宽下界 1.5 C 是
+// 3σ 的钳位值，反推 σ = 0.5 C；湿度同理由 5 %RH 反推 2 %RH。
+constexpr float SENSE_CALM_TEMP_DEV_C = 0.5f;
+constexpr float SENSE_CALM_HUMIDITY_DEV_PCT = 2.0f;
+// 抢占回最快档之后至少保持这么久。基线偏差是慢变量（学习率 0.05），刚出过事时
+// 它还没反应过来，此刻让它来判定“已经太平了”是不对的。开机同样先按最快档跑满
+// 一次，别在还什么都没学到的时候就先慢下来。
+constexpr unsigned long SENSE_FAST_HOLD_MS = 30000;
 constexpr uint8_t DRIFT_WINDOW_SIZE = 10;
 constexpr float DRIFT_MIN_TEMP_RISE_C = 2.0f;
 constexpr float DRIFT_MAX_HUMIDITY_RISE_PCT = 1.0f;
@@ -87,22 +107,20 @@ constexpr char BASELINE_NVS_KEY[] = "state";
 AdaptiveBaselineConfig makeAdaptiveBaselineConfig()
 {
     AdaptiveBaselineConfig config;
-    // These are counted in SAMPLES, but what they mean is a DURATION. Deriving
-    // them from SENSE_INTERVAL_MS keeps that meaning fixed: shortening the
-    // sensing interval must make the screen more responsive, not make the
-    // baseline learn from a fifth of the evidence or relearn five times sooner.
+    // Both are durations, and AdaptiveBaseline now measures them against
+    // millis() rather than counting samples. That is what makes an adaptive
+    // sensing interval safe: "warmed up" stays four minutes and "relocated"
+    // stays an hour whether the device is sampling every 2 s or every 10 s.
     constexpr unsigned long kWarmupMs = 4UL * 60UL * 1000UL;   // 4 min
     constexpr unsigned long kRelearnMs = 60UL * 60UL * 1000UL; // 1 h
 
-    config.warmupSamples =
-        static_cast<uint16_t>(kWarmupMs / SENSE_INTERVAL_MS);
-    config.relearnAfterOutsideSamples =
-        static_cast<uint32_t>(kRelearnMs / SENSE_INTERVAL_MS);
+    config.warmupMs = kWarmupMs;
+    config.relearnAfterOutsideMs = kRelearnMs;
 
     // Write throttle: bounded by wall clock as well, so flash wear does not
     // scale with the sensing rate.
     config.persistEveryLearnedSamples =
-        static_cast<uint16_t>(kRelearnMs / SENSE_INTERVAL_MS);
+        static_cast<uint16_t>(kRelearnMs / SENSE_INTERVAL_MIN_MS);
     config.minPersistIntervalMs = 60UL * 60UL * 1000UL;
     return config;
 }
@@ -174,6 +192,13 @@ PubSubClient mqtt(tlsClient);
 unsigned long lastSafetySampleMs = 0;
 unsigned long lastReasoningReportMs = 0;
 unsigned long lastEdgeSampleMs = 0;
+// 当前感知周期，起步取最快档：还没学到任何东西之前不该先慢下来。
+unsigned long senseIntervalMs = SENSE_INTERVAL_MIN_MS;
+// 上一次的判决状态。指向静态字符串，存指针即可。
+const char *lastAssessmentState = nullptr;
+// 最快档的保持窗口。开机即生效，见 SENSE_FAST_HOLD_MS。
+unsigned long fastHoldStartMs = 0;
+bool fastHoldActive = true;
 unsigned long lastCloudReportMs = 0;
 
 static void initAdaptiveBaseline()
@@ -857,6 +882,17 @@ static bool parseBuzzerValue(JsonVariantConst value, bool &enabled)
 }
 
 // 云端下发命令回调：显示消息或驱动真实蜂鸣器 (BUZZER_PIN)。
+//
+// 实现范围（设备侧，完整）：订阅 $oc/devices/{id}/sys/commands/#，解析 IoTDA
+// 命令报文，执行，并按官方结构在 .../commands/response/request_id=xxx 上回执。
+//
+// 未实现（应用侧）：经 IoTDA 应用侧接口主动下发命令这一环没有做——那需要用
+// AK/SK 鉴权调用华为云 API，本作品没有实现调用方。因此整条下行链路没有做过
+// 端到端验证：设备侧的接收与回执只在控制台手工下发的报文上验证过，没有验证过
+// 由程序发起的下发。
+//
+// 该限制不影响告警。告警由设备本地判决驱动，不依赖任何下行命令；下行命令只能
+// 改变显示内容与蜂鸣器的手动开关，不能改变告警阈值与硬限。
 static void onMqttMessage(char *topicChars, byte *payload, unsigned int length)
 {
     const String topic(topicChars);
@@ -1075,12 +1111,13 @@ void setup()
     // 把编译进来的阈值打出来。这些值分散在 config.h 和几处 #ifndef 兜底里，
     // 靠读源码推断哪个生效过一次错，就会在演示时对着一个自己以为的数字调试。
     Serial.printf("[CONFIG] alarm temp=%.1fC humidity=%.1f%% "
-                  "buzzer=%s active=%s sense=%lums cloud=%lums\n",
+                  "buzzer=%s active=%s sense=%lu-%lums cloud=%lums\n",
                   ALARM_TEMP_C,
                   ALARM_HUMIDITY_PCT,
                   ENABLE_BUZZER ? "on" : "off",
                   BUZZER_ACTIVE_LEVEL == LOW ? "LOW" : "HIGH",
-                  (unsigned long)SENSE_INTERVAL_MS,
+                  SENSE_INTERVAL_MIN_MS,
+                  SENSE_INTERVAL_MAX_MS,
                   (unsigned long)CLOUD_INTERVAL_MS);
 
     Serial.println(ENABLE_BUZZER
@@ -1147,6 +1184,96 @@ void setup()
             OLED::showStatus("NTP FAILED");
         }
     }
+}
+
+// 周期决定的结果。带上原因——设备已经在为告警说明理由了，一个自己会变的周期
+// 更该说清楚它当下为什么是这个值，否则现场只能靠猜。
+struct SenseDecision
+{
+    unsigned long intervalMs;
+    const char *reason;
+    float calm; // 仅在 reason 为 calm/ramp 时有意义，其余为 -1
+};
+
+// 下一个感知周期。
+//
+// 判据是基线学到的平均偏差——这屋平时晃多少。偏差小说明环境安静，采得慢一点
+// 不会错过什么；偏差大就回到最快档。
+//
+// 但偏差本身是慢变量（学习率 0.05），出事时它反应不过来，所以任何“不太平”的
+// 迹象都直接抢占，不等它。
+static SenseDecision preemptSense(const char *reason, unsigned long nowMs)
+{
+    fastHoldActive = true;
+    fastHoldStartMs = nowMs;
+    return {SENSE_INTERVAL_MIN_MS, reason, -1.0f};
+}
+
+static SenseDecision nextSenseInterval(
+    unsigned long current,
+    const EdgeAssessment &assessment,
+    const AdaptiveBaselineResult &baseline,
+    bool stateChanged,
+    unsigned long nowMs)
+{
+    // 逐条分开判，而不是并成一个条件：日志要说得出是哪一条把周期摁住了。
+    if (stateChanged)
+        return preemptSense("state_change", nowMs);
+
+    // 抢占看的是事件，不是状态。
+    //
+    // watch 级（HIGH_TEMPERATURE / HIGH_HUMIDITY / BASELINE_SHIFT）描述的是一个
+    // 可以长期成立的处境：一间常年 72 %RH 的房间会一直判 HIGH_HUMIDITY。若把它
+    // 也算作抢占，这类场所的周期就永远拉不长——而那既没有新信息，也换不来任何
+    // 安全性，因为告警根本不经过这条通路。进入该状态的那一刻已由 stateChanged
+    // 抢占过一次，此后它只是稳定地“有点潮”。
+    //
+    // warning 级不同：UNSTABLE 说明读数本身不可信，快升类说明正在变化，两者都
+    // 是“现在正在发生”的事，必须保持最快档。
+    if (strcmp(assessment.severity, "warning") == 0 ||
+        strcmp(assessment.severity, "urgent") == 0)
+    {
+        return preemptSense("severity", nowMs);
+    }
+    if (!baseline.ready)
+        return preemptSense("warmup", nowMs);
+    if (baseline.hardLimitExceeded)
+        return preemptSense("hard_limit", nowMs);
+
+    // 带外不抢占，理由与 watch 级完全相同：持续处在学习到的范围之外是一个状态，
+    // 不是一个事件。进入带外的那一刻已由 stateChanged 抢占过；此后设备只是稳定地
+    // 待在一个与当初学习时不同的环境里，没有新信息，却会因为带外样本不参与学习
+    // 而一直维持下去——真让它抢占，换过一次环境的设备就再也慢不下来了。
+    //
+    // 越硬限仍然抢占（上一条），那是危险而不只是“不一样”。
+
+    // 抢占刚过去还不算太平，先按最快档把保持窗口走完再谈变慢。
+    if (fastHoldActive)
+    {
+        if (nowMs - fastHoldStartMs < SENSE_FAST_HOLD_MS)
+            return {SENSE_INTERVAL_MIN_MS, "hold", -1.0f};
+        fastHoldActive = false;
+    }
+
+    // 温湿度各算一个躁动度，取更激进的那个：一个量安静不代表另一个也安静。
+    const float agitation = fmaxf(
+        baseline.temperatureDeviationC / SENSE_CALM_TEMP_DEV_C,
+        baseline.humidityDeviationPct / SENSE_CALM_HUMIDITY_DEV_PCT);
+    const float calm = 1.0f - fminf(1.0f, agitation);
+    const unsigned long span =
+        SENSE_INTERVAL_MAX_MS - SENSE_INTERVAL_MIN_MS;
+    const unsigned long target =
+        SENSE_INTERVAL_MIN_MS +
+        static_cast<unsigned long>(static_cast<float>(span) * calm);
+
+    // 变慢是渐进的，变快是立刻的。反过来会在安静与不安静的边界上反复横跳，
+    // 而这个不对称让代价落在“多采几次”这一侧，不落在“晚发现”那一侧。
+    if (target > current)
+    {
+        const unsigned long stepped = current + SENSE_INTERVAL_STEP_MS;
+        return {stepped > target ? target : stepped, "ramp", calm};
+    }
+    return {target, "calm", calm};
 }
 
 void loop()
@@ -1232,7 +1359,7 @@ void loop()
     }
 
     const unsigned long reportNow = millis();
-    if (reportNow - lastReasoningReportMs < SENSE_INTERVAL_MS)
+    if (reportNow - lastReasoningReportMs < senseIntervalMs)
     {
         delay(20);
         return;
@@ -1265,7 +1392,7 @@ void loop()
     {
         temp = medianFilterTemp(temp);
         humi = medianFilterHumi(humi);
-        latestBaseline = adaptiveBaseline.observe(temp, humi);
+        latestBaseline = adaptiveBaseline.observe(temp, humi, millis());
         if (!latestBaseline.validSample)
         {
             Serial.println(
@@ -1274,12 +1401,11 @@ void loop()
         }
 
         // EdgeReasoner 的窗口是固定的 12 个样本，而它的阈值（极差 4C/15%RH、
-        // 净升 0.8C）是按 2 分钟窗口整定的。若直接按感知周期喂，把感知周期从
-        // 10 s 缩到 2 s 就等于把窗口缩到 24 s——阈值没变，含义却变了：净升那
-        // 一条会取代速率成为实际门槛，"快升"需要的斜率反而被抬高。
+        // 净升 0.8C）是按 2 分钟窗口整定的。感知周期现在是自适应的，若直接按
+        // 它喂，窗口时长就跟着环境忽长忽短——阈值没变，含义却在变。
         //
-        // 所以推理按自己的固定节奏取样，与显示刷新率解耦。屏幕上的数字仍每
-        // 2 s 更新，趋势判据仍在 2 分钟的证据上做出。
+        // 所以推理仍按自己的固定节奏取样。这也正是感知周期上界取
+        // EDGE_SAMPLE_INTERVAL_MS 的原因：采得再慢，窗口就喂不满了。
         if (reportNow - lastEdgeSampleMs >= EDGE_SAMPLE_INTERVAL_MS)
         {
             lastEdgeSampleMs = reportNow;
@@ -1290,6 +1416,14 @@ void loop()
     persistAdaptiveBaselineIfDue();
     const EdgeAssessment assessment =
         applyAdaptiveAssessment(edgeReasoner.assess(), latestBaseline);
+
+    const bool stateChanged =
+        lastAssessmentState == nullptr ||
+        strcmp(lastAssessmentState, assessment.state) != 0;
+    lastAssessmentState = assessment.state;
+    const SenseDecision senseDecision = nextSenseInterval(
+        senseIntervalMs, assessment, latestBaseline, stateChanged, reportNow);
+    senseIntervalMs = senseDecision.intervalMs;
 
     Serial.print("[SENSOR] Temp=");
     Serial.print(temp, 1);
@@ -1312,6 +1446,21 @@ void loop()
     }
     baselineWasReady = latestBaseline.ready;
 
+    Serial.print("[SENSE] interval=");
+    Serial.print(senseIntervalMs);
+    Serial.print("ms reason=");
+    Serial.print(senseDecision.reason);
+    if (senseDecision.calm >= 0.0f)
+    {
+        Serial.print(" calm=");
+        Serial.print(senseDecision.calm, 2);
+        Serial.print(" devT=");
+        Serial.print(latestBaseline.temperatureDeviationC, 2);
+        Serial.print(" devH=");
+        Serial.print(latestBaseline.humidityDeviationPct, 2);
+    }
+    Serial.println();
+
     Serial.print("[BASELINE] status=");
     Serial.print(AdaptiveBaseline::statusName(latestBaseline.status));
     Serial.print(" progress=");
@@ -1320,7 +1469,8 @@ void loop()
     Serial.println(latestBaseline.learnedSamples);
 
     OLED::updateDashboard(
-        temp, humi, assessment, latestBaseline, mqtt.connected());
+        temp, humi, senseIntervalMs, assessment, latestBaseline,
+        mqtt.connected());
 
     // One combined MQTT message carries both services per cloud slot. This is
     // the only metered path, so it is throttled separately from reasoning.

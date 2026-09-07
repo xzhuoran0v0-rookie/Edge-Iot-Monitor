@@ -76,11 +76,11 @@ installation and flags departures from it.
 
 | Property | Value | Why |
 |---|---|---|
-| Warmup | ~4 min, converted to a sample count from `SENSE_INTERVAL_MS` | Enough to characterise a room. Expressed as a duration so changing the sensing rate does not change how much evidence it learns from |
+| Warmup | 4 min, measured against `millis()` | Enough to characterise a room. Measured in time rather than samples so an adaptive reporting interval cannot change how much evidence it learns from |
 | Band | center ± 3σ, clamped to [1.5, 5] °C and [5, 15] %RH | An unbounded band eventually accepts anything |
 | Learning rate | 0.02 center, 0.05 deviation | Slow: ordinary drift must not drag the band along |
 | Out-of-band samples | not learned | Otherwise a passing anomaly drags the baseline along with it |
-| Sustained departure | relearn after ~1 h out of band, likewise converted from `SENSE_INTERVAL_MS` | Without it a relocated device is stuck in `BASELINE_SHIFT` forever — see below |
+| Sustained departure | relearn after 1 h out of band, likewise measured in time | Without it a relocated device is stuck in `BASELINE_SHIFT` forever — see below |
 | Warmup clamping | ±3 °C / ±10 %RH per sample | One odd sample cannot define the initial center |
 | Persistence | NVS blob, magic + version + config signature + checksum | Survives reboot; a changed config invalidates the old blob |
 
@@ -99,11 +99,16 @@ never moves again, and it reports `BASELINE_SHIFT` forever. Nothing is written
 back to NVS either — the persistence path is gated on `dirty_`, which only
 learning sets.
 
-So a departure sustained for `relearnAfterOutsideSamples` consecutive samples —
-derived from `SENSE_INTERVAL_MS` so that it always means about an hour — is
-taken as evidence that the learned band describes somewhere else, and learning
-restarts from scratch. Any in-band
-sample resets the counter, so a brief excursion never triggers it.
+So a departure sustained for `relearnAfterOutsideMs` — one hour, measured
+against the clock rather than counted in samples — is taken as evidence that the
+learned band describes somewhere else, and learning restarts from scratch. Any
+in-band sample restarts that clock, so a brief excursion never triggers it.
+
+Both this and the warmup are read from `millis()`, which is what makes the
+adaptive reporting interval below safe to have: "an hour out of band" means an
+hour whether the device is currently processing every 2 s or every 10 s. One
+sample can credit at most `kMaxObserveDeltaMs` (60 s), so a stalled caller
+cannot finish warmup in a single observation.
 
 This costs nothing in safety, and it is worth being precise about why. Alarm
 thresholds (`ALARM_TEMP_C`, `ALARM_HUMIDITY_PCT`) and hard limits are fixed
@@ -112,7 +117,7 @@ reading against those, not from the baseline. Relearning a warmer room changes
 which readings are called a *pattern shift*. It cannot change which ones sound
 the alarm.
 
-Set `relearnAfterOutsideSamples` to 0 to disable it and keep the band frozen
+Set `relearnAfterOutsideMs` to 0 to disable it and keep the band frozen
 once it leaves — appropriate only if a permanently stuck `BASELINE_SHIFT` is
 preferable to an adapted one.
 
@@ -195,8 +200,37 @@ without looking at the screen.
 ## What the device sends
 
 The assessment goes out over two independent paths, unchanged, each on its own
-interval: the local backend every `SENSE_INTERVAL_MS` (2 s, free), and IoTDA
-every `CLOUD_INTERVAL_MS` (60 s, metered).
+interval: the local backend every `senseIntervalMs` (2–10 s, adaptive, free),
+and IoTDA every `CLOUD_INTERVAL_MS` (60 s, fixed, metered).
+
+### The adaptive reporting interval
+
+`senseIntervalMs` drives the median filter, `AdaptiveBaseline::observe()`, the
+OLED refresh and the local POST. It is **not** the sampling rate: the SHT30 is
+still read once a second by the safety task, unchanged, because the sampling
+rate *is* the alarm latency. What adapts is how often that reading is processed
+and reported.
+
+The signal is the deviation the baseline has already learned — how much this
+room normally moves. A calm room does not need the same processing rate as one
+that is changing, so the interval stretches toward 10 s when the learned
+deviation is small.
+
+| Rule | Value | Why |
+|---|---|---|
+| Floor | 2 s | SHT30 τ63 ≈ 2 s; processing faster adds no information |
+| Ceiling | 10 s | `EDGE_SAMPLE_INTERVAL_MS` — reporting slower than the reasoner is fed would starve the 12-sample window |
+| Preempt | state change, severity ≠ `info`, baseline not ready, out of band, hard limit | Back to the floor immediately; the learned deviation is a slow variable and must not be what decides that things have calmed down |
+| Fast hold | 30 s after any preempt | Same reason, from the other side: just after an event is not the moment to conclude it is over |
+| Slowing | +500 ms per cycle | Gradual, and interruptible at any point |
+
+Speeding up is immediate, slowing down is gradual. The asymmetry puts the cost
+of being wrong on the "processed a few more times than needed" side rather than
+the "noticed late" side.
+
+Both bounds come from physics rather than tuning, and the whole feature is only
+safe because the alarm does not depend on this path — an early decision to run
+hard limits on their own 1 Hz task is what allows this one to vary at all.
 
 **Huawei Cloud IoTDA** — one MQTT message, two services:
 

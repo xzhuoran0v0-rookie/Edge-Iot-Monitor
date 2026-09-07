@@ -1,3 +1,17 @@
+/**
+ * 本地网页看板
+ *
+ * 状态：可运行，非交付重点。
+ *
+ * - 数据来源：轮询后端 /api/readings，轮询间隔见 src/api.ts
+ * - 部署范围：仅本地网页，需与设备和后端处于同一网段，未做公网部署
+ * - components/DataQa.tsx 依赖后端的 AI 叙述模块。该模块默认关闭，
+ *   关闭时该面板不返回内容，其余面板不受影响
+ *
+ * 边界：本页只展示设备上报的结论，不做任何判定。状态、严重度、置信度与原因码
+ * 均由 ESP32-S3 计算，前端与后端都不重新计算。
+ */
+
 import { useEffect, useRef, useState } from "react";
 import type { ReadingsSnapshot } from "./types";
 import { fetchReadings, POLL_INTERVAL_MS } from "./api";

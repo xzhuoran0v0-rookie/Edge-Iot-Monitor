@@ -58,6 +58,7 @@ unsigned long OLED::page_started_ms_ = 0;
 float OLED::latest_temp_ = 0.0f;
 float OLED::latest_humi_ = 0.0f;
 float OLED::latest_confidence_ = 0.0f;
+unsigned long OLED::latest_sense_interval_ms_ = 0;
 bool OLED::latest_cloud_connected_ = false;
 String OLED::latest_state_;
 String OLED::latest_severity_;
@@ -357,6 +358,7 @@ void OLED::drawWrappedSlice(const String &text,
 }
 
 void OLED::updateDashboard(float temp, float humi,
+                           unsigned long senseIntervalMs,
                            const EdgeAssessment &assessment,
                            const AdaptiveBaselineResult &baseline,
                            bool cloudConnected)
@@ -366,6 +368,7 @@ void OLED::updateDashboard(float temp, float humi,
     latest_temp_ = temp;
     latest_humi_ = humi;
     latest_confidence_ = assessment.confidence;
+    latest_sense_interval_ms_ = senseIntervalMs;
     latest_cloud_connected_ = cloudConnected;
     latest_state_ = assessment.displayLabel;
     latest_severity_ = assessment.severity;
@@ -609,6 +612,12 @@ void OLED::renderDashboardPage()
                      2,
                      REASON_LINES_PER_PAGE,
                      2);
+    // 原因文字占第 2/4/6 行，第 7 行始终空着，正好留给当前上报周期。
+    // 它是会变的，所以站在设备前面的人应当看得见它此刻是多少，
+    // 否则「自适应」只存在于串口里。
+    setCursor(7, 0);
+    drawString("REPORT " +
+               String(latest_sense_interval_ms_ / 1000.0f, 1) + " s");
 }
 
 void OLED::renderCustomPage()

@@ -18,10 +18,24 @@ int failures = 0;
         }                                                                    \
     } while (false)
 
+// 感知周期现在是自适应的，所以 observe() 收的是时钟而不是"第几个样本"。
+// 测试用一个固定步长的假时钟，一次调用前进一步，语义与原来的"一个样本"等价。
+constexpr uint32_t kStepMs = 1000;
+uint32_t testClockMs = 0;
+
+AdaptiveBaselineResult obs(AdaptiveBaseline &baseline,
+                           float temperatureC,
+                           float humidityPct)
+{
+    testClockMs += kStepMs;
+    return baseline.observe(temperatureC, humidityPct, testClockMs);
+}
+
 AdaptiveBaselineConfig testConfig()
 {
     AdaptiveBaselineConfig config;
-    config.warmupSamples = 8;
+    // learnStableRoom() 走 8 步，其中第一步是种子、不计时，所以恰好累计 7 步。
+    config.warmupMs = 7 * kStepMs;
     config.persistEveryLearnedSamples = 4;
     config.minPersistIntervalMs = 1000;
     return config;
@@ -34,7 +48,7 @@ void learnStableRoom(AdaptiveBaseline &baseline)
         const float temperature = 24.8f + (i % 3) * 0.1f;
         const float humidity = 54.5f + (i % 2) * 0.4f;
         const AdaptiveBaselineResult result =
-            baseline.observe(temperature, humidity);
+            obs(baseline, temperature, humidity);
         CHECK(result.validSample);
         CHECK(result.learned == (i != 0));
     }
@@ -49,13 +63,13 @@ void testLearningAndBounds()
           AdaptiveBaselineStatus::RESET);
 
     const AdaptiveBaselineResult invalid =
-        baseline.observe(NAN, 50.0f);
+        obs(baseline, NAN, 50.0f);
     CHECK(invalid.status ==
           AdaptiveBaselineStatus::INVALID_SAMPLE);
     CHECK(baseline.learnedSampleCount() == 0);
 
     const AdaptiveBaselineResult hard =
-        baseline.observe(45.0f, 50.0f);
+        obs(baseline, 45.0f, 50.0f);
     CHECK(hard.status == AdaptiveBaselineStatus::HARD_LIMIT);
     CHECK(hard.temperatureHardLimit);
     CHECK(!hard.learned);
@@ -77,7 +91,7 @@ void testLearningAndBounds()
 
     const uint32_t learnedBefore = baseline.learnedSampleCount();
     const AdaptiveBaselineResult outside =
-        baseline.observe(40.0f, 55.0f);
+        obs(baseline, 40.0f, 55.0f);
     CHECK(outside.status ==
           AdaptiveBaselineStatus::OUTSIDE_ADAPTIVE_BAND);
     CHECK(outside.temperatureOutsideBand);
@@ -85,7 +99,7 @@ void testLearningAndBounds()
     CHECK(baseline.learnedSampleCount() == learnedBefore);
 
     const AdaptiveBaselineResult hardHumidity =
-        baseline.observe(25.0f, 95.0f);
+        obs(baseline, 25.0f, 95.0f);
     CHECK(hardHumidity.status ==
           AdaptiveBaselineStatus::HARD_LIMIT);
     CHECK(hardHumidity.humidityHardLimit);
@@ -97,24 +111,24 @@ void testBadFirstSampleCannotPoisonBaseline()
     AdaptiveBaseline baseline(testConfig());
 
     const AdaptiveBaselineResult badFirst =
-        baseline.observe(0.0f, 30.0f);
+        obs(baseline, 0.0f, 30.0f);
     CHECK(badFirst.validSample);
     CHECK(!badFirst.learned);
     CHECK(baseline.learnedSampleCount() == 0);
 
     const AdaptiveBaselineResult replacement =
-        baseline.observe(25.0f, 55.0f);
+        obs(baseline, 25.0f, 55.0f);
     CHECK(replacement.validSample);
     CHECK(!replacement.learned);
     CHECK(baseline.learnedSampleCount() == 0);
 
     const AdaptiveBaselineResult confirmed =
-        baseline.observe(25.1f, 55.2f);
+        obs(baseline, 25.1f, 55.2f);
     CHECK(confirmed.learned);
     CHECK(baseline.learnedSampleCount() == 2);
 
     for (int i = 0; i < 6; ++i)
-        CHECK(baseline.observe(25.0f, 55.0f).learned);
+        CHECK(obs(baseline, 25.0f, 55.0f).learned);
 
     const AdaptiveBaselineResult ready = baseline.snapshot();
     CHECK(ready.ready);
@@ -129,8 +143,8 @@ void testPersistenceRoundTripAndThrottle()
     const AdaptiveBaselinePersistentState state =
         source.exportState();
 
-    CHECK(sizeof(state) == 36);
-    CHECK(AdaptiveBaseline::persistentStateSize() == 36);
+    CHECK(sizeof(state) == 40);
+    CHECK(AdaptiveBaseline::persistentStateSize() == 40);
 
     AdaptiveBaseline restored(testConfig());
     CHECK(restored.restoreState(state, 200));
@@ -149,7 +163,7 @@ void testPersistenceRoundTripAndThrottle()
     for (int i = 0; i < 4; ++i)
     {
         const AdaptiveBaselineResult result =
-            restored.observe(25.0f, 55.0f);
+            obs(restored, 25.0f, 55.0f);
         CHECK(result.learned);
     }
     CHECK(!restored.persistenceDue(1199));
@@ -206,7 +220,7 @@ void testNarrowConfigurationAndMillisWrap()
 
     AdaptiveBaseline constrained(narrow);
     for (int i = 0; i < 8; ++i)
-        CHECK(constrained.observe(20.5f, 55.0f).learned == (i != 0));
+        CHECK(obs(constrained, 20.5f, 55.0f).learned == (i != 0));
 
     const AdaptiveBaselineResult constrainedResult =
         constrained.snapshot();
@@ -221,7 +235,7 @@ void testNarrowConfigurationAndMillisWrap()
     learnStableRoom(baseline);
     baseline.markPersisted(UINT32_MAX - 500U);
     for (int i = 0; i < 4; ++i)
-        CHECK(baseline.observe(25.0f, 55.0f).learned);
+        CHECK(obs(baseline, 25.0f, 55.0f).learned);
     CHECK(!baseline.persistenceDue(498));
     CHECK(baseline.persistenceDue(499));
 
@@ -242,7 +256,8 @@ void testNarrowConfigurationAndMillisWrap()
 void testSustainedDepartureRelearns()
 {
     AdaptiveBaselineConfig config = testConfig();
-    config.relearnAfterOutsideSamples = 5;
+    // 首个带外样本起算，所以第 5 个样本的时距是 4 步。
+    config.relearnAfterOutsideMs = 4 * kStepMs;
 
     AdaptiveBaseline baseline(config);
     learnStableRoom(baseline);
@@ -251,17 +266,17 @@ void testSustainedDepartureRelearns()
     // A short excursion is an anomaly, not a move: it must not relearn, and
     // returning in-band must clear the count.
     for (int i = 0; i < 4; ++i)
-        CHECK(baseline.observe(31.0f, 55.0f).outsideAdaptiveBand);
+        CHECK(obs(baseline, 31.0f, 55.0f).outsideAdaptiveBand);
     CHECK(baseline.ready());
-    CHECK(baseline.observe(24.8f, 54.6f).learned);
+    CHECK(obs(baseline, 24.8f, 54.6f).learned);
 
-    // Sustained departure: the count restarts from zero, so it takes a further
-    // five consecutive samples rather than one.
+    // Sustained departure: the clock restarts, so it takes a further five
+    // consecutive samples rather than one.
     for (int i = 0; i < 4; ++i)
-        CHECK(baseline.observe(31.0f, 55.0f).outsideAdaptiveBand);
+        CHECK(obs(baseline, 31.0f, 55.0f).outsideAdaptiveBand);
     CHECK(baseline.ready());
 
-    const AdaptiveBaselineResult relearn = baseline.observe(31.0f, 55.0f);
+    const AdaptiveBaselineResult relearn = obs(baseline, 31.0f, 55.0f);
     CHECK(!relearn.outsideAdaptiveBand);
     CHECK(!baseline.ready());
     CHECK(baseline.learnedSampleCount() == 0);
@@ -269,7 +284,7 @@ void testSustainedDepartureRelearns()
 
     // It settles on the new environment.
     for (int i = 0; i < 10; ++i)
-        baseline.observe(31.0f + (i % 3) * 0.1f, 55.0f);
+        obs(baseline, 31.0f + (i % 3) * 0.1f, 55.0f);
     CHECK(baseline.ready());
     const AdaptiveBaselineResult settled = baseline.snapshot();
     CHECK(settled.temperatureLowerC < 31.0f);
@@ -277,16 +292,54 @@ void testSustainedDepartureRelearns()
 
     // Hard limits are untouched by relearning — the point of the whole design.
     CHECK(settled.temperatureUpperC < config.hardTempUpperC);
-    CHECK(baseline.observe(46.0f, 55.0f).hardLimitExceeded);
+    CHECK(obs(baseline, 46.0f, 55.0f).hardLimitExceeded);
 
     // Relearning can be switched off entirely.
     AdaptiveBaselineConfig frozenConfig = testConfig();
-    frozenConfig.relearnAfterOutsideSamples = 0;
+    frozenConfig.relearnAfterOutsideMs = 0;
     AdaptiveBaseline frozen(frozenConfig);
     learnStableRoom(frozen);
     for (int i = 0; i < 50; ++i)
-        CHECK(frozen.observe(31.0f, 55.0f).outsideAdaptiveBand);
+        CHECK(obs(frozen, 31.0f, 55.0f).outsideAdaptiveBand);
     CHECK(frozen.ready());
+}
+
+// 感知周期是自适应的，所以"预热四分钟"和"持续偏离一小时"必须按时间成立，不能
+// 按样本数——否则环境一安静、采样一变慢，这两个判据的含义就跟着漂了。这正是
+// 把计数换成时钟的全部理由，所以它需要一条自己的测试。
+void testWarmupIsMeasuredInTimeNotSamples()
+{
+    const AdaptiveBaselineConfig config = testConfig(); // warmupMs = 7 步
+
+    // 慢采样：每次跨 5 步。三次调用（首次只对表、不计时）即越过预热门槛。
+    AdaptiveBaseline slow(config);
+    uint32_t slowClock = 0;
+    for (int i = 0; i < 3; ++i)
+    {
+        slowClock += 5 * kStepMs;
+        slow.observe(24.8f + (i % 2) * 0.1f, 54.5f, slowClock);
+    }
+    CHECK(slow.ready());
+    // 而且是靠时间到的，不是靠样本数——按旧口径这点样本远远不够。
+    CHECK(slow.learnedSampleCount() < 7);
+
+    // 同样三次调用，快采样下时间不够，就不该就绪。
+    AdaptiveBaseline fast(config);
+    uint32_t fastClock = 0;
+    for (int i = 0; i < 3; ++i)
+    {
+        fastClock += kStepMs;
+        fast.observe(24.8f + (i % 2) * 0.1f, 54.5f, fastClock);
+    }
+    CHECK(!fast.ready());
+
+    // 反过来也要挡住：调用方停摆十分钟，不能靠一个样本把预热跳完。
+    AdaptiveBaselineConfig firmwareLike = testConfig();
+    firmwareLike.warmupMs = 4UL * 60UL * 1000UL; // 与固件一致的 4 min
+    AdaptiveBaseline stalled(firmwareLike);
+    stalled.observe(24.8f, 54.5f, 0);
+    stalled.observe(24.9f, 54.6f, 10UL * 60UL * 1000UL);
+    CHECK(!stalled.ready());
 }
 }
 
@@ -298,6 +351,7 @@ int main()
     testResetPersistence();
     testNarrowConfigurationAndMillisWrap();
     testSustainedDepartureRelearns();
+    testWarmupIsMeasuredInTimeNotSamples();
 
     if (failures != 0)
     {

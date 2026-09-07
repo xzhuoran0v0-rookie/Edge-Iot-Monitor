@@ -13,8 +13,12 @@
  */
 struct AdaptiveBaselineConfig
 {
-    // Number of accepted samples required before adaptive-band decisions start.
-    uint16_t warmupSamples = 24;
+    // How long the baseline must have been learning before adaptive-band
+    // decisions start. Expressed as a duration rather than a sample count
+    // because the caller's sensing interval is itself adaptive — counting
+    // samples would make "warmed up" mean four minutes when the environment is
+    // busy and twenty when it is calm.
+    uint32_t warmupMs = 4UL * 60UL * 1000UL;
 
     // Persistence throttle. The module never writes flash itself.
     uint16_t persistEveryLearnedSamples = 60;
@@ -48,10 +52,10 @@ struct AdaptiveBaselineConfig
     float centerLearningRate = 0.02f;
     float deviationLearningRate = 0.05f;
 
-    // Consecutive out-of-band samples after which the baseline is assumed to
-    // belong to a different environment and is relearned from scratch. Any
-    // in-band sample resets the count, so this only fires on a sustained
-    // departure — a device moved to another room, not a passing anomaly.
+    // How long a departure must last before the baseline is assumed to belong
+    // to a different environment and is relearned from scratch. Any in-band
+    // sample restarts the clock, so this only fires on a sustained departure —
+    // a device moved to another room, not a passing anomaly.
     //
     // Safety does not depend on this. Alarm thresholds and hard limits are
     // fixed, human-set values that are never learned, so relearning a warmer
@@ -61,7 +65,7 @@ struct AdaptiveBaselineConfig
     // 0 disables relearning: the baseline then stays frozen forever once it
     // leaves its band, which is the behaviour to pick only if a stuck
     // BASELINE_SHIFT is preferable to an adapted one.
-    uint32_t relearnAfterOutsideSamples = 360;
+    uint32_t relearnAfterOutsideMs = 60UL * 60UL * 1000UL;
 
     // Winsorization used only while collecting the initial baseline. It limits
     // how much one otherwise hard-safe sample can move the initial center.
@@ -100,6 +104,12 @@ struct AdaptiveBaselineResult
     uint8_t progressPct = 0;
     uint32_t learnedSamples = 0;
 
+    // Learned agitation of this installation. Exposed because the caller uses
+    // it to decide how often to sample: a calm room does not need the same
+    // sensing rate as one that is moving.
+    float temperatureDeviationC = 0.0f;
+    float humidityDeviationPct = 0.0f;
+
     float temperatureCenterC = 0.0f;
     float humidityCenterPct = 0.0f;
     float temperatureLowerC = 0.0f;
@@ -122,6 +132,9 @@ struct AdaptiveBaselinePersistentState
     uint16_t size = 0;
     uint32_t configSignature = 0;
     uint32_t learnedSamples = 0;
+    // Warmup is measured in time, so the elapsed total has to survive a reboot
+    // alongside what was learned during it.
+    uint32_t warmupElapsedMs = 0;
     float temperatureCenterC = 0.0f;
     float humidityCenterPct = 0.0f;
     float temperatureDeviationC = 0.0f;
@@ -147,7 +160,7 @@ struct AdaptiveBaselinePersistentState
  *   if (prefs.getBytes("envbase", &saved, sizeof(saved)) == sizeof(saved))
  *       baseline.restoreState(saved, millis());
  *
- *   AdaptiveBaselineResult result = baseline.observe(temp, humidity);
+ *   AdaptiveBaselineResult result = baseline.observe(temp, humidity, millis());
  *   if (baseline.persistenceDue(millis())) {
  *       const auto state = baseline.exportState();
  *       if (prefs.putBytes("envbase", &state, sizeof(state)) == sizeof(state))
@@ -164,8 +177,20 @@ public:
 
     /**
      * Process one sensor sample and return the updated baseline assessment.
+     *
+     * `nowMs` is a monotonic millisecond clock (millis()). Warmup progress and
+     * the sustained-departure judgement are both measured against it, so an
+     * irregular or adaptive sensing interval does not change what they mean.
+     * Wraparound is handled by unsigned subtraction; a gap larger than
+     * kMaxObserveDeltaMs is credited as kMaxObserveDeltaMs so a stalled caller
+     * cannot finish warmup in one sample.
      */
-    AdaptiveBaselineResult observe(float temperatureC, float humidityPct);
+    AdaptiveBaselineResult observe(float temperatureC,
+                                   float humidityPct,
+                                   uint32_t nowMs);
+
+    // Largest span one sample may contribute to warmup or to a departure.
+    static constexpr uint32_t kMaxObserveDeltaMs = 60UL * 1000UL;
 
     /**
      * Return current progress, bands, and status without changing learning.
@@ -228,6 +253,7 @@ private:
                         float &humidityUpperPct) const;
     void learnWarmup(float temperatureC, float humidityPct);
     void learnReady(float temperatureC, float humidityPct);
+    uint32_t consumeElapsed(uint32_t nowMs);
 
     AdaptiveBaselineConfig config_;
     uint32_t configSignature_ = 0;
@@ -241,7 +267,11 @@ private:
     float seedTemperatureC_ = 0.0f;
     float seedHumidityPct_ = 0.0f;
 
-    uint32_t consecutiveOutsideSamples_ = 0;
+    uint32_t warmupElapsedMs_ = 0;
+    uint32_t lastObserveMs_ = 0;
+    bool haveLastObserve_ = false;
+    uint32_t firstOutsideMs_ = 0;
+    bool outsidePending_ = false;
     uint32_t learnedSincePersist_ = 0;
     uint32_t lastPersistMs_ = 0;
     bool persistedOnce_ = false;

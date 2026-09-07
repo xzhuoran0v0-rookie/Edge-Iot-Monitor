@@ -56,7 +56,7 @@
 // to conduct through the housing. To raise temperature without moisture, hold a
 // warm object 1-2 cm away.
 #define ALARM_TEMP_C 30.0f
-#define ALARM_HUMIDITY_PCT 70.0f
+#define ALARM_HUMIDITY_PCT 80.0f
 #define IOTDA_ALARM_SERVICE_ID "Alarm"
 #define IOTDA_BUZZER_COMMAND_NAME "BuzzerControl"
 

@@ -91,9 +91,15 @@ command cannot switch it off while it is active.
 because it never calls a model. This is a consequence of the architecture, not
 a mitigation bolted onto it.
 
-**Cost is zero per decision.** 43,200 assessments per device per day at the 2 s
-sensing interval, none of them billable. Cloud traffic is throttled separately
-to 1,440 messages/day, 14% of a 10,000/day free tier.
+**Cost is zero per decision.** Up to 43,200 assessments per device per day at
+the 2 s floor — fewer once the reporting interval stretches in a calm room —
+none of them billable. Cloud traffic is throttled separately to 1,440
+messages/day, 14% of a 10,000/day free tier.
+
+**Only the recording path is allowed to vary.** The processing and reporting
+interval adapts to how much the room is actually moving; sampling, hard limits
+and the alarm stay at a fixed 1 Hz, because sampling rate *is* alarm latency.
+Separating those two early is what makes the adaptive part safe to add later.
 
 ## Implementation status
 

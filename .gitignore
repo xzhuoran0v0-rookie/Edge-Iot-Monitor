@@ -92,3 +92,13 @@ desktop.ini
 /TODO.md
 firmware/combined/src/config.h
 package-lock.json
+
+# --- Codex/工具中间产物（内含大体积 pptx 副本） ---
+.codex-*/
+.docx-review-plan/
+
+# --- 答辩材料与素材，不属于本仓库 ---
+output/
+video/
+asset/
+.ppt-review/

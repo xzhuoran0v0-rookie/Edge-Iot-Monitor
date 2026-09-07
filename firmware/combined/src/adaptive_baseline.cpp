@@ -6,7 +6,7 @@
 namespace
 {
 constexpr uint32_t PERSISTENT_MAGIC = 0x4E4C4241UL; // "ABLN" little-endian
-constexpr uint16_t PERSISTENT_VERSION = 1;
+constexpr uint16_t PERSISTENT_VERSION = 2;
 constexpr uint32_t FNV_OFFSET_BASIS = 2166136261UL;
 constexpr uint32_t FNV_PRIME = 16777619UL;
 
@@ -48,9 +48,9 @@ uint32_t saturatingIncrement(uint32_t value)
 
 static_assert(sizeof(float) == 4,
               "AdaptiveBaseline persistence requires 32-bit float");
-static_assert(offsetof(AdaptiveBaselinePersistentState, checksum) == 32,
+static_assert(offsetof(AdaptiveBaselinePersistentState, checksum) == 36,
               "Unexpected persistent-state layout");
-static_assert(sizeof(AdaptiveBaselinePersistentState) == 36,
+static_assert(sizeof(AdaptiveBaselinePersistentState) == 40,
               "Unexpected persistent-state size");
 
 AdaptiveBaseline::AdaptiveBaseline()
@@ -71,8 +71,13 @@ AdaptiveBaselineConfig AdaptiveBaseline::sanitizeConfig(
     const AdaptiveBaselineConfig defaults;
     AdaptiveBaselineConfig value = input;
 
-    if (value.warmupSamples < 4)
-        value.warmupSamples = defaults.warmupSamples;
+    // A warmup shorter than a few seconds cannot characterise a room, and one
+    // longer than a day means the baseline never becomes usable.
+    if (value.warmupMs < 5UL * 1000UL ||
+        value.warmupMs > 24UL * 60UL * 60UL * 1000UL)
+    {
+        value.warmupMs = defaults.warmupMs;
+    }
     if (value.persistEveryLearnedSamples == 0)
         value.persistEveryLearnedSamples =
             defaults.persistEveryLearnedSamples;
@@ -256,7 +261,7 @@ uint32_t AdaptiveBaseline::calculateConfigSignature(
     const AdaptiveBaselineConfig &config)
 {
     uint32_t hash = FNV_OFFSET_BASIS;
-    hashValue(hash, config.warmupSamples);
+    hashValue(hash, config.warmupMs);
     hashValue(hash, config.physicalTempLowerC);
     hashValue(hash, config.physicalTempUpperC);
     hashValue(hash, config.physicalHumidityLowerPct);
@@ -277,7 +282,7 @@ uint32_t AdaptiveBaseline::calculateConfigSignature(
     hashValue(hash, config.warmupTempDeltaClampC);
     hashValue(hash, config.warmupHumidityDeltaClampPct);
     // Deliberately excluded: persistEveryLearnedSamples, minPersistIntervalMs
-    // and relearnAfterOutsideSamples. They are policy, not semantics — they do
+    // and relearnAfterOutsideMs. They are policy, not semantics — they do
     // not change what a stored center/deviation means, so changing one must not
     // throw away an otherwise valid baseline.
     return hash;
@@ -292,6 +297,7 @@ uint32_t AdaptiveBaseline::calculateStateChecksum(
     hashValue(hash, state.size);
     hashValue(hash, state.configSignature);
     hashValue(hash, state.learnedSamples);
+    hashValue(hash, state.warmupElapsedMs);
     hashValue(hash, state.temperatureCenterC);
     hashValue(hash, state.humidityCenterPct);
     hashValue(hash, state.temperatureDeviationC);
@@ -301,7 +307,11 @@ uint32_t AdaptiveBaseline::calculateStateChecksum(
 
 void AdaptiveBaseline::clearRuntimeState(bool persistenceRequired)
 {
-    consecutiveOutsideSamples_ = 0;
+    warmupElapsedMs_ = 0;
+    lastObserveMs_ = 0;
+    haveLastObserve_ = false;
+    firstOutsideMs_ = 0;
+    outsidePending_ = false;
     learnedSamples_ = 0;
     temperatureCenterC_ = 0.0f;
     humidityCenterPct_ = 0.0f;
@@ -325,7 +335,7 @@ void AdaptiveBaseline::reset()
 
 bool AdaptiveBaseline::ready() const
 {
-    return learnedSamples_ >= config_.warmupSamples;
+    return warmupElapsedMs_ >= config_.warmupMs;
 }
 
 uint8_t AdaptiveBaseline::progressPercent() const
@@ -334,7 +344,9 @@ uint8_t AdaptiveBaseline::progressPercent() const
         return 100;
 
     const uint32_t progress =
-        learnedSamples_ * 100UL / config_.warmupSamples;
+        static_cast<uint32_t>(
+            static_cast<uint64_t>(warmupElapsedMs_) * 100ULL /
+            config_.warmupMs);
     return static_cast<uint8_t>(progress > 100UL ? 100UL : progress);
 }
 
@@ -413,6 +425,8 @@ AdaptiveBaselineResult AdaptiveBaseline::makeResult(
     result.ready = ready();
     result.progressPct = progressPercent();
     result.learnedSamples = learnedSamples_;
+    result.temperatureDeviationC = temperatureDeviationC_;
+    result.humidityDeviationPct = humidityDeviationPct_;
     result.temperatureCenterC = temperatureCenterC_;
     result.humidityCenterPct = humidityCenterPct_;
     calculateBands(result.temperatureLowerC,
@@ -448,11 +462,12 @@ void AdaptiveBaseline::learnWarmup(float temperatureC,
             -config_.warmupHumidityDeltaClampPct,
             config_.warmupHumidityDeltaClampPct);
         const uint32_t nextCount = saturatingIncrement(learnedSamples_);
-        const float alpha =
-            1.0f / static_cast<float>(
-                nextCount > config_.warmupSamples
-                    ? config_.warmupSamples
-                    : nextCount);
+        // A plain running mean over the warmup, but never slower than the
+        // steady-state rate — warmup is now a duration, so there is no sample
+        // count to cap the denominator with.
+        const float alpha = fmaxf(
+            1.0f / static_cast<float>(nextCount),
+            config_.centerLearningRate);
 
         const float boundedTemp =
             temperatureCenterC_ + tempDelta;
@@ -504,10 +519,32 @@ void AdaptiveBaseline::learnReady(float temperatureC,
     dirty_ = true;
 }
 
+uint32_t AdaptiveBaseline::consumeElapsed(uint32_t nowMs)
+{
+    if (!haveLastObserve_)
+    {
+        haveLastObserve_ = true;
+        lastObserveMs_ = nowMs;
+        return 0;
+    }
+
+    // Unsigned subtraction, so a millis() wraparound still yields the real gap.
+    uint32_t delta = nowMs - lastObserveMs_;
+    lastObserveMs_ = nowMs;
+    if (delta > kMaxObserveDeltaMs)
+        delta = kMaxObserveDeltaMs;
+    return delta;
+}
+
 AdaptiveBaselineResult AdaptiveBaseline::observe(
     float temperatureC,
-    float humidityPct)
+    float humidityPct,
+    uint32_t nowMs)
 {
+    // Charged once per call, before any early return: a sample that is refused
+    // still tells us how much time passed, and the departure clock below has to
+    // keep running while the caller is sampling at its slowest.
+    const uint32_t elapsedMs = consumeElapsed(nowMs);
     const bool valid =
         finiteFloat(temperatureC) &&
         finiteFloat(humidityPct) &&
@@ -577,6 +614,7 @@ AdaptiveBaselineResult AdaptiveBaseline::observe(
                 fabsf(humidityPct - seedHumidityPct_) * 0.5f;
             learnedSamples_ = 2;
             learnedSincePersist_ = 2;
+            warmupElapsedMs_ += elapsedMs;
             dirty_ = true;
             seedPending_ = false;
 
@@ -590,6 +628,7 @@ AdaptiveBaselineResult AdaptiveBaseline::observe(
         }
 
         learnWarmup(temperatureC, humidityPct);
+        warmupElapsedMs_ += elapsedMs;
         lastStatus_ = ready()
             ? AdaptiveBaselineStatus::READY
             : AdaptiveBaselineStatus::LEARNING;
@@ -612,19 +651,20 @@ AdaptiveBaselineResult AdaptiveBaseline::observe(
         humidityPct < humidityLower || humidityPct > humidityUpper;
     if (tempOutside || humidityOutside)
     {
-        consecutiveOutsideSamples_ =
-            saturatingIncrement(consecutiveOutsideSamples_);
+        if (!outsidePending_)
+        {
+            outsidePending_ = true;
+            firstOutsideMs_ = nowMs;
+        }
 
         // A sustained departure means the learned band describes somewhere
         // else. Without this the band can never move again: out-of-band
         // samples are not learned, so a relocated device stays in
         // BASELINE_SHIFT forever and nothing is ever written back to NVS.
-        if (config_.relearnAfterOutsideSamples > 0 &&
-            consecutiveOutsideSamples_ >=
-                config_.relearnAfterOutsideSamples)
+        if (config_.relearnAfterOutsideMs > 0 &&
+            nowMs - firstOutsideMs_ >= config_.relearnAfterOutsideMs)
         {
             reset();
-            consecutiveOutsideSamples_ = 0;
             lastStatus_ = AdaptiveBaselineStatus::LEARNING;
             AdaptiveBaselineResult result = makeResult(lastStatus_);
             result.validSample = true;
@@ -642,7 +682,7 @@ AdaptiveBaselineResult AdaptiveBaseline::observe(
     }
 
     // Back inside the band: the departure was transient, not a relocation.
-    consecutiveOutsideSamples_ = 0;
+    outsidePending_ = false;
     learnReady(temperatureC, humidityPct);
     lastStatus_ = AdaptiveBaselineStatus::READY;
     AdaptiveBaselineResult result = makeResult(lastStatus_);
@@ -660,6 +700,7 @@ AdaptiveBaselinePersistentState AdaptiveBaseline::exportState() const
         static_cast<uint16_t>(sizeof(AdaptiveBaselinePersistentState));
     state.configSignature = configSignature_;
     state.learnedSamples = learnedSamples_;
+    state.warmupElapsedMs = warmupElapsedMs_;
     state.temperatureCenterC = temperatureCenterC_;
     state.humidityCenterPct = humidityCenterPct_;
     state.temperatureDeviationC = temperatureDeviationC_;
@@ -706,6 +747,10 @@ bool AdaptiveBaseline::restoreState(
     }
 
     learnedSamples_ = state.learnedSamples;
+    warmupElapsedMs_ = state.warmupElapsedMs;
+    haveLastObserve_ = false;
+    firstOutsideMs_ = 0;
+    outsidePending_ = false;
     temperatureCenterC_ = state.temperatureCenterC;
     humidityCenterPct_ = state.humidityCenterPct;
     temperatureDeviationC_ = state.temperatureDeviationC;
