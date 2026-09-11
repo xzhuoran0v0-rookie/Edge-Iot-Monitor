@@ -276,8 +276,8 @@ def run_oled_command_test() -> None:
     if queued["duration_ms"] != 30000:
         raise AssertionError(f"expected duration_ms normalised to 30000, got {queued}")
 
-    # The OLED has no Chinese font; the firmware rejects non-ASCII byte by byte.
-    assert_response(create("oled:温度过高", 8000), 400, "error")
+    # The firmware rejects non-ASCII text byte by byte.
+    assert_response(create("oled:café", 8000), 400, "error")
     assert_response(create("oled:   ", 8000), 400, "error")
     assert_response(create("oled:", 8000), 400, "error")
 

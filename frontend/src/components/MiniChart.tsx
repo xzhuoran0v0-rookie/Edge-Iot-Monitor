@@ -8,7 +8,7 @@ interface Props {
 
 export default function MiniChart({ data, color, height = 120 }: Props) {
   if (data.length < 2) {
-    return <div className="chart-empty">等待足够的数据点…</div>;
+    return <div className="chart-empty">Waiting for more data points…</div>;
   }
 
   const values = data.map((d) => d.value);

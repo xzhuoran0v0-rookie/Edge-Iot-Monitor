@@ -12,7 +12,7 @@ type QaState =
  *
  * This is a convenience feature outside the monitoring path — the device's own
  * assessment is what drives alerts, and it is computed on-chip. Answers render
- * in the browser, so they come back in Chinese; the OLED has its own command
+ * in the browser, so they come back in English; the OLED has its own command
  * channel with its own ASCII rules.
  */
 export default function DataQa() {
@@ -28,7 +28,7 @@ export default function DataQa() {
       const answer = await askBackend(prompt);
       setState({ step: "done", answer });
     } catch {
-      setState({ step: "error", message: "AI 不可用，请检查推理后端是否运行" });
+      setState({ step: "error", message: "AI unavailable. Check that the inference backend is running." });
     }
   }, [input]);
 
@@ -37,14 +37,14 @@ export default function DataQa() {
   return (
     <div className="card prompt-section">
       <div className="card-title">
-        数据问答
-        <span className="card-note">可选功能，不参与告警判定</span>
+        Data Q&A
+        <span className="card-note">Optional; does not determine alarms</span>
       </div>
       <div className="prompt-row">
         <input
           className="prompt-input"
           type="text"
-          placeholder="问一下传感器数据…"
+          placeholder="Ask about the sensor data…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !busy && handleAsk()}
@@ -55,7 +55,7 @@ export default function DataQa() {
           onClick={handleAsk}
           disabled={!input.trim() || busy}
         >
-          {busy ? "思考中…" : "提问"}
+          {busy ? "Thinking…" : "Ask"}
         </button>
       </div>
 

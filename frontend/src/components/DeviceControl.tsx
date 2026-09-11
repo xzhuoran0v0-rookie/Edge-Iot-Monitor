@@ -4,15 +4,14 @@ import { sendCommand } from "../api";
 /**
  * Fixed messages rather than a free-text box.
  *
- * The OLED has no Chinese font and the firmware rejects anything outside
- * printable ASCII, so a free-text field would need a translation or
- * transliteration layer to be usable from a Chinese page. Presets sidestep that
- * entirely: what is sent is exactly what the device can display.
+ * The firmware accepts only printable ASCII. Presets keep commands within
+ * the display's supported character set: what is sent is exactly what the
+ * device can display.
  */
 const PRESETS = [
-  { label: "显示告警", command: "oled:CHECK ROOM NOW" },
-  { label: "显示正常", command: "oled:ALL CLEAR" },
-  { label: "清除消息", command: "oled:OK" },
+  { label: "Show alert", command: "oled:CHECK ROOM NOW" },
+  { label: "Show all clear", command: "oled:ALL CLEAR" },
+  { label: "Clear message", command: "oled:OK" },
 ] as const;
 
 type SendState =
@@ -30,15 +29,15 @@ export default function DeviceControl() {
       await sendCommand(command);
       setState({ step: "done", label });
     } catch {
-      setState({ step: "error", message: "下发失败，请检查后端是否运行" });
+      setState({ step: "error", message: "Command failed. Check that the backend is running." });
     }
   }, []);
 
   return (
     <div className="card grid-full">
       <div className="card-title">
-        设备控制
-        <span className="card-note">命令下发到 OLED，设备执行后回执</span>
+        Device control
+        <span className="card-note">OLED commands are acknowledged after execution</span>
       </div>
 
       <div className="control-row">
@@ -50,18 +49,18 @@ export default function DeviceControl() {
             disabled={state.step === "sending"}
           >
             {state.step === "sending" && state.command === preset.command
-              ? "下发中…"
+              ? "Sending…"
               : preset.label}
           </button>
         ))}
       </div>
 
       <div className="control-status">
-        {state.step === "done" && `已排队：${state.label}，设备将在下次轮询时取走`}
+        {state.step === "done" && `Queued: ${state.label}. The device will fetch it on its next poll.`}
         {state.step === "error" && (
           <span className="prompt-error">{state.message}</span>
         )}
-        {state.step === "idle" && "屏幕文本必须是 ASCII，因此使用固定预设"}
+        {state.step === "idle" && "Display text must be ASCII; use the presets above."}
       </div>
     </div>
   );

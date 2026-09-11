@@ -1,53 +1,53 @@
 /**
- * EdgeReasoner state codes → Chinese.
+ * EdgeReasoner state codes → English labels.
  *
  * The state set is closed (see firmware/combined/src/edge_reasoner.cpp), so this
  * is an exact lookup. An unknown code falls through and is displayed as-is
  * rather than being mangled — a new firmware state should look unfamiliar,
  * not wrong.
  */
-const EDGE_STATE_ZH: Record<string, string> = {
+const EDGE_STATE_LABEL: Record<string, string> = {
   // EdgeReasoner (edge_reasoner.cpp)
-  WARMUP: "基线学习中",
-  NORMAL: "环境正常",
-  UNSTABLE: "读数不稳定",
-  HEAT_HUMID_RISK: "高温高湿",
-  TEMP_RISING: "温度快速上升",
-  HUMIDITY_RISING: "湿度快速上升",
-  HIGH_TEMPERATURE: "温度偏高",
-  HIGH_HUMIDITY: "湿度偏高",
+  WARMUP: "Learning baseline",
+  NORMAL: "Normal environment",
+  UNSTABLE: "Unstable readings",
+  HEAT_HUMID_RISK: "Hot and humid",
+  TEMP_RISING: "Temperature rising rapidly",
+  HUMIDITY_RISING: "Humidity rising rapidly",
+  HIGH_TEMPERATURE: "High temperature",
+  HIGH_HUMIDITY: "High humidity",
   // AdaptiveBaseline overlay (main.cpp applyAdaptiveAssessment) — these
   // override the states above, so they are the ones that matter most.
-  HARD_LIMIT: "超出安全限值",
-  BASELINE_SHIFT: "偏离学习基线",
+  HARD_LIMIT: "Safety limit exceeded",
+  BASELINE_SHIFT: "Baseline shift",
 };
 
-const EDGE_REASON_ZH: Record<string, string> = {
-  LEARNING_BASELINE: "正在采集本地趋势基线。",
-  STABLE_ENVIRONMENT: "温湿度稳定。",
-  ERRATIC_SIGNAL: "读数变化过于剧烈，暂不可信。",
-  HOT_AND_HUMID: "温度与湿度同时偏高。",
-  RAPID_TEMP_RISE: "温度正在快速上升。",
-  RAPID_HUMIDITY_RISE: "湿度正在快速上升。",
-  TEMP_ABOVE_COMFORT: "温度高于舒适阈值。",
-  HUMIDITY_ABOVE_COMFORT: "湿度高于舒适阈值。",
-  FIXED_SAFETY_LIMIT: "已越过固定安全限值。",
-  TEMP_HUMIDITY_OUTSIDE_BASELINE: "温度与湿度同时超出学习到的正常范围。",
-  TEMP_OUTSIDE_BASELINE: "温度超出学习到的正常范围。",
-  HUMIDITY_OUTSIDE_BASELINE: "湿度超出学习到的正常范围。",
+const EDGE_REASON_LABEL: Record<string, string> = {
+  LEARNING_BASELINE: "Collecting a local trend baseline.",
+  STABLE_ENVIRONMENT: "Temperature and humidity are stable.",
+  ERRATIC_SIGNAL: "Readings are too erratic to trust.",
+  HOT_AND_HUMID: "Temperature and humidity are both high.",
+  RAPID_TEMP_RISE: "Temperature is rising rapidly.",
+  RAPID_HUMIDITY_RISE: "Humidity is rising rapidly.",
+  TEMP_ABOVE_COMFORT: "Temperature is above the comfort threshold.",
+  HUMIDITY_ABOVE_COMFORT: "Humidity is above the comfort threshold.",
+  FIXED_SAFETY_LIMIT: "A fixed safety limit has been crossed.",
+  TEMP_HUMIDITY_OUTSIDE_BASELINE: "Temperature and humidity are outside the learned normal range.",
+  TEMP_OUTSIDE_BASELINE: "Temperature is outside the learned normal range.",
+  HUMIDITY_OUTSIDE_BASELINE: "Humidity is outside the learned normal range.",
 };
 
-export function edgeStateZh(state: string): string {
-  return EDGE_STATE_ZH[state] ?? state;
+export function edgeStateLabel(state: string): string {
+  return EDGE_STATE_LABEL[state] ?? state;
 }
 
-export function edgeReasonZh(reasonCode: string, fallback: string): string {
-  return EDGE_REASON_ZH[reasonCode] ?? fallback;
+export function edgeReasonLabel(reasonCode: string, fallback: string): string {
+  return EDGE_REASON_LABEL[reasonCode] ?? fallback;
 }
 
-export const SEVERITY_ZH: Record<string, string> = {
-  info: "正常",
-  watch: "关注",
-  warning: "警告",
-  urgent: "紧急",
+export const SEVERITY_LABEL: Record<string, string> = {
+  info: "Normal",
+  watch: "Watch",
+  warning: "Warning",
+  urgent: "Urgent",
 };

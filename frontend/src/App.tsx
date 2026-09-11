@@ -22,7 +22,7 @@ import DeviceControl from "./components/DeviceControl";
 import DataQa from "./components/DataQa";
 
 function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("zh-CN", {
+  return new Date(iso).toLocaleTimeString("en-GB", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -78,57 +78,57 @@ export default function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1>边缘环境监测台</h1>
-        <span className="subtitle">ESP32-S3 · SHT30 · 边缘推理</span>
+        <h1>Edge Environment Monitor</h1>
+        <span className="subtitle">ESP32-S3 · SHT30 · On-device reasoning</span>
       </header>
 
       {!reachable && (
         <div className="banner banner-error">
-          无法连接后端服务，显示的是最后一次成功获取的数据。
+          Cannot reach the backend. Showing the last successfully received data.
         </div>
       )}
 
       {loading ? (
         <div className="card grid-full">
-          <div className="reasoning-message muted">正在读取设备数据…</div>
+          <div className="reasoning-message muted">Loading device data…</div>
         </div>
       ) : (
         <>
           {/* Row 1: live values + device status */}
           <div className="grid">
             <div className="card">
-              <div className="card-title">实时数据</div>
+              <div className="card-title">Live readings</div>
               <div className="stat-row">
                 <div className="stat">
                   <span className="stat-value">
                     {temp !== null ? `${temp.toFixed(1)}°C` : "—"}
                   </span>
-                  <span className="stat-label">温度</span>
+                  <span className="stat-label">Temperature</span>
                 </div>
                 <div className="stat">
                   <span className="stat-value">
                     {hum !== null ? `${hum.toFixed(1)}%` : "—"}
                   </span>
-                  <span className="stat-label">湿度</span>
+                  <span className="stat-label">Humidity</span>
                 </div>
               </div>
               <div className="timestamp" style={{ marginTop: 12 }}>
                 {snapshot?.last_seen
-                  ? `更新于 ${formatTime(snapshot.last_seen)}`
-                  : "尚无数据"}
+                  ? `Updated at ${formatTime(snapshot.last_seen)}`
+                  : "No data yet"}
               </div>
             </div>
 
             <div className="card">
-              <div className="card-title">设备状态</div>
+              <div className="card-title">Device status</div>
               <StatusBar
                 backendReachable={reachable}
                 deviceOnline={snapshot?.online ?? false}
               />
               <div className="timestamp" style={{ marginTop: 12 }}>
-                {snapshot?.online ? "设备在线" : "设备离线"}
+                {snapshot?.online ? "Device online" : "Device offline"}
                 {snapshot?.last_seen
-                  ? ` · 最后上报 ${formatTime(snapshot.last_seen)}`
+                  ? ` · Last report ${formatTime(snapshot.last_seen)}`
                   : ""}
               </div>
             </div>
@@ -137,11 +137,11 @@ export default function App() {
           {/* Row 2: charts */}
           <div className="grid">
             <div className="card">
-              <div className="card-title">温度趋势</div>
+              <div className="card-title">Temperature trend</div>
               <MiniChart data={tempPoints} color="#2563eb" />
             </div>
             <div className="card">
-              <div className="card-title">湿度趋势</div>
+              <div className="card-title">Humidity trend</div>
               <MiniChart data={humPoints} color="#16a34a" />
             </div>
           </div>

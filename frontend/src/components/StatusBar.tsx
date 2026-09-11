@@ -15,8 +15,8 @@ interface Props {
  */
 export default function StatusBar({ backendReachable, deviceOnline }: Props) {
   const items = [
-    { key: "backend", label: "后端服务", ok: backendReachable },
-    { key: "device", label: "设备上报", ok: deviceOnline },
+    { key: "backend", label: "Backend", ok: backendReachable },
+    { key: "device", label: "Device reports", ok: deviceOnline },
   ];
 
   return (
