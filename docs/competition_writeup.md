@@ -1,70 +1,282 @@
 # Competition Writeup
 
-This document contains wording that can be used in the competition proposal, report, or presentation.
+Wording for the proposal, report, and presentation. Everything here describes
+what the code actually does.
 
 ## Project Name
 
-Cloud-Based Intelligent Environment Monitoring and Alerting System
+Edge-Intelligence Environment Monitoring System — On-Device Reasoning with
+Cloud Reporting
 
 ## One-Sentence Summary
 
-Built with an ESP32-S3, SHT30, OLED, buzzer, and Huawei Cloud IoTDA, this project creates a closed-loop intelligent environment monitoring system covering edge data collection, cloud access, LLM analysis, platform command delivery, and device alerts.
+An ESP32-S3 that learns what "normal" means in the room it is installed in and
+decides on its own, in under a second, whether conditions have changed — with
+Huawei Cloud IoTDA and a web dashboard carrying that decision outward, and a
+language model used only to explain it.
 
 ## Background
 
-Traditional temperature and humidity monitoring systems usually trigger alarms with fixed thresholds. They can identify a value outside a limit, but struggle to explain the cause or predict risk from recent trends. This project adds cloud LLM analysis so the system can monitor temperature and humidity, evaluate recent changes, explain likely causes, and recommend actions.
+Threshold alarms have two well-known failure modes. A fixed threshold cannot
+know that one room idles at 34 °C and another at 18 °C, so it either cries wolf
+or stays silent. And a system that ships its data to the cloud to be judged
+stops working the moment the network does — precisely when a monitoring system
+is least able to afford it.
+
+Cloud LLM analysis is the obvious modern answer, and it inherits both problems:
+every decision now depends on connectivity, on an API quota, and on a model
+returning parseable output.
+
+This project inverts that. The decision runs on the microcontroller. The cloud
+receives conclusions rather than producing them.
 
 ## Technical Route
 
-The device uses an ESP32-S3 as its controller and connects to an SHT30 temperature and humidity sensor, an OLED display, and a buzzer. It connects to Huawei Cloud IoTDA over Wi-Fi and reports properties through the official IoTDA MQTT/MQTTS device interface.
+An ESP32-S3 reads an SHT30 over I²C. A dedicated FreeRTOS task samples at 1 Hz
+and checks fixed safety limits and alarm thresholds, independent of all network
+activity. The main loop then median-filters that reading and passes it through
+two reasoning layers, on an interval that adapts between 2 s and 10 s according
+to how much this room actually moves — the sampling rate itself never changes,
+because sampling rate is alarm latency:
 
-Huawei Cloud IoTDA handles device access, product models, property reporting, device shadows, data forwarding, and command delivery. The cloud analysis service receives data forwarded by IoTDA, maintains recent temperature and humidity trends, and calls a cloud LLM API for risk analysis.
+`AdaptiveBaseline` learns the ambient range of the actual installation —
+incremental center and deviation, bounded bands, slow learning rates,
+out-of-band samples excluded from learning, state persisted to NVS so a reboot
+does not restart the education.
 
-When the LLM identifies risks such as high temperature, high humidity, condensation, poor ventilation, or a sudden environmental change, the cloud service converts the result into an official IoTDA device command and sends it to the ESP32-S3. The device then controls the buzzer and OLED to produce a physical alert.
+`EdgeReasoner` evaluates a 12-sample sliding window against fixed thresholds and
+per-minute rates, producing a state, a severity, a confidence, and a machine-
+readable reason code.
 
-## System Closed Loop
+The two combine: a hard-limit breach overrides everything; a baseline departure
+is reported only when the fixed layer sees nothing. Crossing a local alarm
+threshold sounds the buzzer and writes the cause to the OLED within a second,
+with nothing in between.
+
+The same verdict then leaves the device twice: over MQTT/MQTTS to Huawei Cloud
+IoTDA as a standard property report, and over HTTP to a local C++ service that
+stores it in SQLite. Both are recording paths. Neither is consulted to produce
+the decision, and neither can prevent the alarm.
+
+## System Loop
 
 ```text
-ESP32-S3 data collection
-  -> Huawei Cloud IoTDA property report
-  -> Cloud analysis service
-  -> Cloud LLM risk reasoning
-  -> IoTDA command delivery
-  -> ESP32-S3 buzzer alert
+SHT30
+  -> 1 Hz safety task (hard limits + local alarm thresholds)
+  -> buzzer + OLED reason           (immediate, no network, ~1 s)
+  -> median filter -> AdaptiveBaseline -> EdgeReasoner
+  -> EdgeAssessment {state, severity, confidence, reason}
+  -> OLED                           (immediate, no network)
+  -> IoTDA property report          (Environment + EdgeReasoning services)
+  -> local backend                  (SQLite, IQR)
 ```
+
+Everything below the buzzer line is recording. The device has already decided
+and already alarmed by the time any of it runs.
+
+## Scope
+
+What is delivered is the **device**: sensing, learned baseline, deterministic
+assessment, and a local alarm that sounds within a second without a network.
+That path is complete and verified on hardware.
+
+Around it sit two recording paths — Huawei Cloud IoTDA over MQTTS, and a local
+C++ service with SQLite — both verified. A local web dashboard and an optional
+LLM narration layer exist and work, but they are development and verification
+tools rather than deliverables: the system monitors and alarms correctly with
+both switched off. Their production form is described under Future Work.
 
 ## Innovation Points
 
-1. The cloud LLM acts as an environment risk analysis module rather than a chatbot.
-2. The system evaluates recent temperature and humidity trends instead of relying only on individual threshold readings.
-3. The LLM explains abnormal conditions, assigns a risk level, and recommends actions, improving system explainability.
-4. The ESP32-S3 does not store the LLM API key, reducing the risk of credential exposure.
-5. Huawei Cloud IoTDA provides standardized device access and command delivery.
-6. A local Ollama model can serve as a backup analysis engine when the cloud LLM is unavailable.
-7. Rule-based thresholds provide a final safety fallback so the system never depends entirely on LLM output.
+1. **The decision is on the chip.** No network appears anywhere in the path from
+   sample to verdict. Pulling the Wi-Fi during a demo changes nothing about the
+   device's behaviour — which is the fastest way to show the architecture is
+   real.
 
-## Safety and Security Design
+2. **Adaptive, but provably bounded.** The learned band is always clamped inside
+   immutable hard limits. Learning can narrow attention; it can never widen the
+   safety boundary. Separating the part that adapts from the part that
+   guarantees is what makes an adaptive system safe to deploy.
 
-- The ESP32-S3 only collects data and executes commands; it never calls the LLM API directly.
-- The LLM API key is stored only in cloud environment variables.
+3. **What the device learns can never change what it alarms on.** Alarm
+   thresholds and hard limits are fixed, human-set values that are never
+   learned, and the adaptive band is clamped inside them. Relearning a warmer
+   room changes which readings are called a *pattern shift*; it can never
+   change which ones sound the buzzer. That separation is what makes it safe to
+   let the baseline move at all.
+
+4. **A passing anomaly and a relocation are told apart by duration.** Samples
+   outside the band are never learned from, so a brief excursion cannot drag
+   the baseline along. But a departure sustained for an hour means the learned
+   band describes somewhere else, and the device recalibrates. Without that, a
+   relocated device is stuck reporting `BASELINE_SHIFT` forever — out-of-band
+   samples are not learned, so the band can never move again.
+
+5. **The system says when it does not trust itself.** `UNSTABLE` /
+   `ERRATIC_SIGNAL` is checked before every other rule: if the signal is too
+   erratic to trust, the device reports that instead of a confident conclusion
+   drawn from noise.
+
+6. **The LLM explains rather than decides — by construction.** No code path
+   converts model output into an alert or a command, and the prompt says so.
+   Freed from being load-bearing, the model stops hedging and stops inflating
+   severity.
+
+7. **Narration fires on state change, not on a record count.** A count-based
+   trigger re-analyses identical steady-state data forever, so the model can
+   only repeat its input back while consuming quota. Steady state produces no
+   call at all.
+
+8. **No credential can leak from the device**, because the device never calls a
+   model. There is nothing on it to extract.
+
+9. **Zero marginal cost per decision.** Up to 43,200 assessments per device per
+   day at the 2 s floor, all made on the chip, none billable. Cloud
+   traffic is throttled separately to 1,440 messages/day — 14% of a 10,000/day
+   free tier, which is what lets one allowance cover about six devices.
+
+10. **The alarm fires before the network exists.** Threshold evaluation lives in
+    the 1 Hz safety task, not the main loop, so a device powered on into an
+    already-unsafe room sounds within a second instead of waiting out Wi-Fi, NTP
+    and MQTT connection. While it is sounding, no remote command can switch it
+    off. Both properties were verified on hardware.
+
+11. **The alert names its cause.** The OLED shows which quantity, its value, and
+    the limit it crossed — `ALARM  TEMP 31.2C LIMIT 30.0C` — rather than a bare
+    label a person still has to interpret.
+
+12. **What the device learns has a second consumer.** The learned deviation is
+    not only compared against — it decides how often the reading is processed
+    and reported. A calm room stretches toward 10 s, anything unsettled snaps
+    back to 2 s and holds there for 30 s. Both bounds come from physics: the
+    sensor's own response time below, the reasoner's 12-sample window above.
+
+13. **Only the recording path is allowed to vary.** Sampling, hard limits and
+    the alarm stay at a fixed 1 Hz, because sampling rate *is* alarm latency.
+    Separating those from the reporting path early is precisely what made the
+    adaptive interval safe to add afterwards — a design where detection and
+    reporting share one cycle could not have it at all.
+
+14. **Degradation is designed, not incidental.** Exponential backoff on the
+    backend, independent MQTT retry, stale-sample guards that block reporting
+    rather than sending a bad value, and a dashboard that distinguishes "backend
+    down" from "device silent".
+
+## Safety and Security
+
+- The decision path contains no network call, no cloud dependency, and no model.
+- Hard safety limits are immutable and checked at 1 Hz on a dedicated task.
+- Adaptive bands are clamped inside those limits and can never widen them.
+- Stale or physically invalid samples block reporting instead of being sent.
+- The ESP32-S3 stores no LLM API key; keys live only in server configuration.
+- Device commands are allowlisted (`buzzer_on`, `buzzer_off`, `oled:<text>`)
+  with a bounded duration, so no arbitrary GPIO control is exposed.
+- Ingest enforces a device allowlist; the command API can require a key.
 - IoTDA property reports use the official topic and JSON structure.
-- IoTDA command delivery uses the official command format.
-- The cloud service validates every LLM result before converting it into a device command.
-- Buzzer commands use allowlisted parameters to prevent arbitrary GPIO control.
-- Local Ollama runs only on a server, edge gateway, or demonstration computer, never on the ESP32-S3.
+- The buzzer GPIO is held high-impedance whenever `ENABLE_BUZZER` is 0, so a
+  command cannot energise a circuit that has not passed hardware verification.
+  The shipped example config keeps it that way; this build enables it only
+  because the module and its active level were tested.
+- A local alarm cannot be silenced by a remote command.
 
-## Recommended Presentation Wording
-
-```text
-This project presents an intelligent environment monitoring and alerting system based on the ESP32-S3, Huawei Cloud IoTDA, and a cloud LLM analysis service. The device collects temperature and humidity readings in real time through an SHT30 sensor and reports them to the cloud over MQTT/MQTTS using the official Huawei Cloud IoTDA device property format. IoTDA manages device access, product models, device shadows, data forwarding, and cloud command delivery.
-
-After receiving data forwarded by IoTDA, the cloud analysis service maintains recent temperature and humidity trends and calls a cloud LLM API to assess environmental risk. The LLM returns a risk level, an explanation of abnormal conditions, recommended actions, and an alarm decision. The cloud service validates the structured result, applies rule-based thresholds as a safety fallback, and controls the ESP32-S3 buzzer/GPIO through the IoTDA command interface.
-
-The system forms a complete closed loop from data collection and cloud access through intelligent analysis and platform control to local alerts. Compared with traditional threshold alarms, it can understand trends, explain risks, and generate useful recommendations. Keeping the API key and inference service in the cloud also improves security, scalability, and presentation value.
-```
-
-## Backup Reasoning Wording
+## Presentation Wording
 
 ```text
-To improve reliability, the project uses a multi-level analysis mechanism: the cloud LLM API is the primary risk reasoning engine, local Ollama provides backup analysis when the cloud API is unavailable, and rule-based thresholds act as the final safety fallback. This design preserves basic analysis and alerting when the network fails, API quota is exhausted, or the cloud model service is unavailable.
+This project is an environment monitoring system whose intelligence runs on the
+device. An ESP32-S3 with an SHT30 sensor learns the ambient temperature and
+humidity range of the room it is installed in, and evaluates each reading
+against both that learned baseline and a set of fixed safety limits. The
+assessment — a state, a severity, a confidence, and a reason — is produced
+entirely on the microcontroller, in deterministic code, with no network call
+anywhere in the decision path.
+
+Crossing a local threshold sounds a buzzer and writes the cause to the OLED
+within a second. The device then reports the same assessment to Huawei Cloud
+IoTDA over MQTT/MQTTS as a standard property report, and to a local C++ service
+that stores it in SQLite. Both are recording paths: neither is consulted to
+reach the decision, and neither can prevent the alarm. A language model is
+available to turn a state change into a readable explanation, but it is never
+asked what to conclude.
+
+Compared with a cloud-decides architecture, this system keeps working when the
+network does not, responds in one second rather than one round trip, exposes no
+credential on the device, and costs nothing per decision. Compared with a fixed
+threshold alarm, it adapts to the room it is actually in — while keeping the
+adaptive band mathematically bounded inside safety limits that learning cannot
+move.
 ```
+
+## Honest Limitations
+
+Worth stating before a judge finds them:
+
+- Commands are issued from the local backend's own HTTP queue. Issuing them
+  through IoTDA's application-side API (AK/SK) is not built; the device accepts
+  such commands, but nothing sends them.
+- Visualisation is local only. The dashboard runs on a machine on the same
+  subnet as the device, which is fine for development and wrong for deployment.
+- Wi-Fi, MQTT, and NTP status are shown on the OLED but are not part of the
+  ingest payload, so nothing downstream can display them.
+- `config.example.h` ships with the buzzer disabled, so anyone reproducing the
+  build must verify their module's active level before enabling it.
+- One device. The data model is keyed by `device_id` throughout, but there is no
+  grouping, per-device configuration, or alarm escalation.
+
+## Future Work
+
+The device side is finished. What remains is the system around it, and each item
+below is a consequence of a limitation stated above rather than a wish list.
+
+**Cloud visualisation.** Today's dashboard needs a laptop on the device's
+subnet. Forwarding IoTDA data into a hosted view removes that dependency and
+makes the data reachable from anywhere — which is what turns a demonstrator into
+something deployable. The device side needs no change: it already publishes its
+verdict as an `EdgeReasoning` service property.
+
+**Cloud command downlink.** The device already accepts and acknowledges
+allowlisted commands over both transports, and the uplink to IoTDA is verified.
+What is missing is a server issuing commands through IoTDA's application-side
+API. The constraint carries over unchanged: whatever is built must stay inside
+the existing allowlist, and must not be able to silence a local alarm.
+
+**Multiple devices and alarm tiering.** Every table is already keyed by
+`device_id` and the ingest path enforces an allowlist, so the storage model
+extends without migration. What is missing is grouping, per-device thresholds,
+and an escalation policy — at present one device's `warning` is indistinguishable
+from another's.
+
+**Hardware-assisted alarms, and genuinely adaptive sampling.** The reporting
+interval adapts today, but the SHT30 itself is still read at a fixed 1 Hz,
+because that rate is the alarm latency. The way to have both is the sensor's own
+`ALERT` pin: program the alarm thresholds into the chip, let it raise an
+interrupt on a crossing, and the MCU is then free to sample as slowly as it
+likes — with a latency better than 1 Hz polling, not worse. The module already
+brings that pin out (`AL`); what it needs is one wire to a free GPIO and the
+alert-limit registers, which also means moving the sensor into periodic
+measurement mode. That last part is why it is not in this version: it changes a
+sampling path that is currently verified.
+
+**A custom board.** The current build is a devkit with breakout modules across
+two I²C buses. A single PCB removes the wiring as a failure mode and fixes the
+buzzer's active level in hardware instead of a compile-time macro.
+
+## Demo Script
+
+The device carries the demo. Everything here works with the laptop closed.
+
+1. Power on. The buzzer self-tests within a second; the OLED carousel shows
+   readings, the verdict with its confidence, and the learned baseline range.
+2. Warm the sensor by hand. The OLED moves to `TEMP RISING`.
+3. Keep warming past 30 °C. The buzzer sounds and the OLED names the cause with
+   real numbers: `ALARM  TEMP 31.2C LIMIT 30.0C`.
+5. **Pull the Wi-Fi and do it again.** The buzzer sounds at the same speed with
+   the same reason on screen. This is the argument for the whole architecture,
+   and it takes ten seconds to make.
+5. Stronger still: hold the sensor warm and press reset. The alarm fires while
+   the device is still connecting to Wi-Fi — it never waited for the network.
+6. Reconnect. Show the IoTDA console receiving `Environment` and `EdgeReasoning`
+   properties, and `edge_assessments` in SQLite as a state transition timeline
+   rather than a wall of duplicates.
+
+Without hardware: `python3 scripts/simulate_sensor.py --interval 2` drives the
+same path, and `--force-edge-state HARD_LIMIT` demonstrates the safety state.

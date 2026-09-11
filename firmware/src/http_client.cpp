@@ -10,10 +10,25 @@
 #define BUZZER_PIN 4
 #endif
 
+namespace
+{
+constexpr uint8_t BUZZER_ON_LEVEL = LOW;
+constexpr uint8_t BUZZER_OFF_LEVEL = HIGH;
+}
+
 void HttpClient::initActuators()
 {
     pinMode(BUZZER_PIN, OUTPUT);
-    digitalWrite(BUZZER_PIN, LOW);
+    digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
+}
+
+void HttpClient::testBuzzer()
+{
+    Serial.println("[BUZZER] Running 3 second diagnostic");
+    digitalWrite(BUZZER_PIN, BUZZER_ON_LEVEL);
+    delay(3000);
+    digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
+    Serial.println("[BUZZER] Diagnostic complete; output OFF");
 }
 
 bool HttpClient::postSensorData(float temp, float humi)
@@ -159,11 +174,11 @@ bool HttpClient::applyCommand(const String &command, int durationMs)
         Serial.print("[CMD] buzzer_on ");
         Serial.print(durationMs);
         Serial.println("ms");
-        digitalWrite(BUZZER_PIN, HIGH);
+        digitalWrite(BUZZER_PIN, BUZZER_ON_LEVEL);
         if (durationMs > 0)
         {
             delay(durationMs);
-            digitalWrite(BUZZER_PIN, LOW);
+            digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
         }
         return true;
     }
@@ -171,7 +186,7 @@ bool HttpClient::applyCommand(const String &command, int durationMs)
     if (command == "buzzer_off")
     {
         Serial.println("[CMD] buzzer_off");
-        digitalWrite(BUZZER_PIN, LOW);
+        digitalWrite(BUZZER_PIN, BUZZER_OFF_LEVEL);
         return true;
     }
 

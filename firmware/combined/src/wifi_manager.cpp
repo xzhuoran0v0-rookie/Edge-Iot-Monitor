@@ -1,5 +1,12 @@
 #include "wifi_manager.h"
 
+namespace
+{
+constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 5000;
+unsigned long last_reconnect_attempt_ms = 0;
+bool connection_reported = false;
+}
+
 // 静态成员定义
 const char *WiFiManager::ssid_ = nullptr;
 const char *WiFiManager::password_ = nullptr;
@@ -18,6 +25,8 @@ bool WiFiManager::init(const char *ssid,
     WiFi.disconnect(true);
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid_, password_);
+    last_reconnect_attempt_ms = millis();
+    connection_reported = false;
 
     uint32_t start = millis();
 
@@ -35,6 +44,7 @@ bool WiFiManager::init(const char *ssid,
     Serial.println();
     Serial.print("[WiFi] Connected! IP: ");
     Serial.println(WiFi.localIP());
+    connection_reported = true;
 
     return true;
 }
@@ -47,9 +57,23 @@ bool WiFiManager::isConnected()
 void WiFiManager::reconnectIfNeeded()
 {
     if (isConnected())
+    {
+        if (!connection_reported)
+        {
+            Serial.print("[WiFi] Reconnected! IP: ");
+            Serial.println(WiFi.localIP());
+            connection_reported = true;
+        }
+        return;
+    }
+
+    const unsigned long now = millis();
+    if (now - last_reconnect_attempt_ms < WIFI_RETRY_INTERVAL_MS)
         return;
 
+    last_reconnect_attempt_ms = now;
     Serial.println("[WiFi] Lost connection, reconnecting...");
+    connection_reported = false;
     WiFi.disconnect();
     WiFi.begin(ssid_, password_);
 

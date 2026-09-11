@@ -599,3 +599,45 @@ std::string AIQueryDispatcher::getLastAnalysis(const std::string &device_id) con
         return it->second;
     return "";
 }
+
+std::string AIQueryDispatcher::answerPrompt(const std::string &device_id,
+                                            const std::string &user_prompt)
+{
+    auto history = storage_.getRecentReadings(device_id, window_size_);
+    const auto summaries = summarize(history);
+
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(2);
+    // 这条回答只进浏览器，不进 OLED —— 屏幕上的文字走的是独立的
+    // oled: 命令通道，那里才有 ASCII 限制。这里用英文回答，
+    // 与网页界面的语言保持一致。
+    ss << "You are an IoT environment monitoring assistant.\n"
+       << "Answer the user's question using the sensor data below.\n"
+       << "Respond in English in 1-3 concise, data-grounded sentences.\n"
+       << "Cite specific values and do not invent information absent from the data.\n\n";
+
+    ss << "Device: " << device_id << "\n\n";
+
+    if (!summaries.empty())
+    {
+        ss << "## Recent sensor data\n";
+        for (const auto &s : summaries)
+        {
+            ss << "- " << s.sensor_type << " [" << s.unit << "]"
+               << "  now=" << s.latest
+               << "  min=" << s.min << "  max=" << s.max
+               << "  mean=" << s.mean
+               << "  change=" << (s.delta >= 0 ? "+" : "") << s.delta
+               << "  over " << s.span_seconds << "s"
+               << "  samples=" << s.count << "\n";
+        }
+    }
+    else
+    {
+        ss << "No sensor data available.\n";
+    }
+
+    ss << "\nUser question: " << user_prompt << "\n";
+
+    return callLLM(ss.str());
+}

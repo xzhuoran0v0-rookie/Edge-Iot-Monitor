@@ -131,17 +131,6 @@ AppConfig loadConfig(const std::string &path)
             cfg.command_api_key = root["security"]["command_api_key"].as<std::string>();
         }
 
-        // ---- cloud ----
-        if (root["cloud"])
-        {
-            auto c = root["cloud"];
-            if (c["enabled"])        cfg.cloud_enabled = c["enabled"].as<bool>();
-            if (c["provider"])       cfg.cloud_provider = c["provider"].as<std::string>();
-            if (c["endpoint"])       cfg.cloud_endpoint = c["endpoint"].as<std::string>();
-            if (c["project_id"])     cfg.cloud_project_id = c["project_id"].as<std::string>();
-            if (c["device_id"])      cfg.cloud_device_id = c["device_id"].as<std::string>();
-            if (c["credential"])     cfg.cloud_credential = c["credential"].as<std::string>();
-        }
 
         std::cout << "[Config] Loaded " << path << "\n";
     }

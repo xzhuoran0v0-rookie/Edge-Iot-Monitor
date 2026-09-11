@@ -1,31 +1,62 @@
 #include "sht30.h"
 
+namespace
+{
+uint8_t sensor_address = SHT30_ADDR_PRIMARY;
+
+bool respondsAt(uint8_t address)
+{
+    Wire.beginTransmission(address);
+    return Wire.endTransmission() == 0;
+}
+} // namespace
+
 bool SHT30::init()
 {
     Wire.begin(SHT30_SDA, SHT30_SCL);
+    Wire.setClock(100000);
+    delay(20);
+
+    if (respondsAt(SHT30_ADDR_PRIMARY))
+    {
+        sensor_address = SHT30_ADDR_PRIMARY;
+    }
+    else if (respondsAt(SHT30_ADDR_SECONDARY))
+    {
+        sensor_address = SHT30_ADDR_SECONDARY;
+    }
+    else
+    {
+        Serial.print("[SHT30] No ACK at 0x44 or 0x45 on SDA=");
+        Serial.print(SHT30_SDA);
+        Serial.print(" SCL=");
+        Serial.println(SHT30_SCL);
+        return false;
+    }
 
     // 发送复位指令
-    Wire.beginTransmission(SHT30_ADDR);
+    Wire.beginTransmission(sensor_address);
     Wire.write(0x30);
     Wire.write(0xA2);
     int err = Wire.endTransmission();
 
     if (err != 0)
     {
-        Serial.print("[SHT30] Init failed, I2C error: ");
-        Serial.print(err);
+        Serial.print("[SHT30] Reset failed, I2C error: ");
+        Serial.println(err);
         return false;
     }
 
     delay(100);
-    Serial.println("[SHT30] Init OK");
+    Serial.print("[SHT30] Init OK at address 0x");
+    Serial.println(sensor_address, HEX);
     return true;
 }
 
 bool SHT30::read(float &temp, float &humi)
 {
     // 发送单次测试指令
-    Wire.beginTransmission(SHT30_ADDR);
+    Wire.beginTransmission(sensor_address);
     Wire.write(0x2c);
     Wire.write(0x06);
     if (Wire.endTransmission() != 0)
@@ -36,7 +67,7 @@ bool SHT30::read(float &temp, float &humi)
     delay(100);
 
     // 读取6字节：温度(2) + CRC(1) + 湿度(2) + CRC(1)
-    Wire.requestFrom(SHT30_ADDR, 6);
+    Wire.requestFrom(sensor_address, static_cast<uint8_t>(6));
     if (Wire.available() != 6)
     {
         Serial.println("[SHT30] read failed");

@@ -14,6 +14,20 @@
 #include "StorageEngine.h"
 
 /**
+ * 状态说明（AI 叙述模块）
+ *
+ * 可选功能，默认关闭。config.yaml 中 ai.enabled 与 deepseek.enabled 均默认为
+ * false；不配置即不启用，后端的采集、存储与查询接口不受影响。
+ *
+ * 启用需要外部推理服务：本地 Ollama（需 ollama serve 且已 pull 模型），或
+ * DeepSeek 云端 API（需 api_key）。两者均不可用时本模块不产出叙述，其余功能
+ * 照常运行。
+ *
+ * 边界：本模块不参与判决。设备的状态、严重度、置信度与原因码全部由 ESP32-S3
+ * 计算后上报，后端与模型都不重新计算、不修改，只在其之上生成自然语言描述。
+ */
+
+/**
  * @brief 云端 DeepSeek 推理配置（OpenAI 兼容 /chat/completions）
  *
  * enabled 且 api_key 非空时作为首选推理后端；
@@ -122,6 +136,9 @@ public:
      * @return 最近一次分析文本；如果还没跑过 AI 则返回空字符串 ""
      */
     std::string getLastAnalysis(const std::string &device_id) const;
+
+    std::string answerPrompt(const std::string &device_id,
+                             const std::string &user_prompt);
 
 private:
     /**

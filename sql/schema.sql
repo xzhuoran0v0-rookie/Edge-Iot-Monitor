@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 
 INSERT OR REPLACE INTO schema_meta (key, value)
-VALUES ('schema_version', '2');
+VALUES ('schema_version', '3');
 
 -- Raw sensor datapoints (one metric per row)
 CREATE TABLE IF NOT EXISTS sensor_readings (
@@ -47,6 +47,26 @@ CREATE TABLE IF NOT EXISTS anomaly_events (
 
 CREATE INDEX IF NOT EXISTS idx_anomaly_events_device_time
     ON anomaly_events (device_id, timestamp);
+
+-- On-device reasoning results.
+--
+-- The ESP32 runs EdgeReasoner locally and ships its verdict alongside the raw
+-- readings (the "edge" object in the ingest payload). This table is where that
+-- verdict lands: it is the device's own conclusion, not a server-side one, so
+-- it is kept apart from analysis_log (LLM narration) and anomaly_events (IQR).
+CREATE TABLE IF NOT EXISTS edge_assessments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id   TEXT NOT NULL,
+    state       TEXT NOT NULL,
+    severity    TEXT NOT NULL,
+    confidence  REAL,
+    reason_code TEXT,
+    reason      TEXT,
+    timestamp   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_edge_assessments_device_time
+    ON edge_assessments (device_id, timestamp);
 
 -- AI analysis logs (placeholder for AIQueryDispatcher/Ollama)
 CREATE TABLE IF NOT EXISTS analysis_log (
@@ -76,10 +96,3 @@ CREATE TABLE IF NOT EXISTS device_commands (
 
 CREATE INDEX IF NOT EXISTS idx_device_commands_device_status
     ON device_commands (device_id, status, id);
-
--- Cloud sync progress tracker (used by CloudSync)
--- One row per table, stores the last synced row id.
-CREATE TABLE IF NOT EXISTS sync_status (
-    table_name      TEXT PRIMARY KEY,
-    last_synced_id  INTEGER NOT NULL DEFAULT 0
-);
